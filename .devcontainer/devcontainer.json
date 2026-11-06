@@ -1,10 +1,10 @@
 {
-  "name": "plugin-template",
+  "name": "plugin-vespa",
   "build": {
     "context": ".",
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspaces/plugin-template",
+  "workspaceFolder": "/workspaces/plugin-vespa",
   "forwardPorts": [8080],
   "customizations": {
     "vscode": {
