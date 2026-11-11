@@ -18,6 +18,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -54,9 +55,13 @@ class VespaContainerTest extends VespaContainer {
 
             JsonNode actual = json(get(url));
 
+            assertThat(actual.path("id").asText(), is(expected.path("put").asText()));
             assertThat(expected.path("put").asText(), atTensorFloatPrecision(actual.path("fields")), is(atTensorFloatPrecision(expected.path("fields"))));
         }
-        assertThat(catalog.stream().map(d -> d.path("put").asText()).toList(), hasItem("id:mynamespace:music::liebe-ist-für-alle-da"));
+        assertThat(catalog.stream().map(d -> d.path("put").asText()).toList(), hasItems(
+            "id:mynamespace:music::liebe-ist-für-alle-da",
+            "id:mynamespace:music::ac/dc back in black"
+        ));
     }
 
     @Test
@@ -76,6 +81,32 @@ class VespaContainerTest extends VespaContainer {
         IllegalStateException e = assertThrows(IllegalStateException.class, () -> feed(catalog));
 
         assertThat(e.getMessage(), allOf(containsString("bad-doc"), containsString("400"), containsString("no_such_field")));
+    }
+
+    @Test
+    void feedRejectsUnsupportedLine(@TempDir Path dir) throws Exception {
+        for (String line : List.of(
+            "{\"remove\": \"id:mynamespace:music::not-a-put\"}",
+            "{\"put\": \"id:mynamespace:music:n=1:numbered\", \"fields\": {\"album\": \"x\"}}"
+        )) {
+            Path catalog = dir.resolve("unsupported.jsonl");
+            Files.writeString(catalog, line + "\n");
+
+            IllegalStateException e = assertThrows(IllegalStateException.class, () -> feed(catalog));
+
+            assertThat(e.getMessage(), containsString(line));
+        }
+        assertThat(get(endpoint + "/document/v1/mynamespace/music/number/1/numbered").statusCode(), is(404));
+    }
+
+    @Test
+    void awaitTimeoutNamesLastAnswer() {
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+            () -> await("the moon", Duration.ofSeconds(1), () -> {
+                throw new IllegalStateException("503 not converged yet");
+            }));
+
+        assertThat(e.getMessage(), allOf(containsString("the moon"), containsString("503 not converged yet")));
     }
 
     private static JsonNode atTensorFloatPrecision(JsonNode node) {

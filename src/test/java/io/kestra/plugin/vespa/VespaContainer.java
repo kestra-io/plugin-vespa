@@ -8,6 +8,7 @@ import com.github.dockerjava.api.model.Ports;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.runners.RunContextFactory;
 import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.core.utils.Rethrow;
 import io.micronaut.context.annotation.Value;
 import jakarta.inject.Inject;
 import org.slf4j.Logger;
@@ -17,6 +18,7 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -31,6 +33,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -86,8 +90,8 @@ public class VespaContainer {
         }
 
         String converge = configServer + "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default/serviceconverge";
-        await("application convergence", () -> MAPPER.readTree(send(get(converge)).body()).path("converged").asBoolean());
-        await("query API", () -> send(get(url(8080) + "/status.html")).statusCode() == 200);
+        await("application convergence", Duration.ofSeconds(120), answers(converge, r -> MAPPER.readTree(r.body()).path("converged").asBoolean()));
+        await("query API", Duration.ofSeconds(120), answers(url(8080) + "/status.html", r -> r.statusCode() == 200));
         LOG.info("Deployed {}", applicationDir);
     }
 
@@ -95,11 +99,15 @@ public class VespaContainer {
     static void feed(Path catalogJsonl) {
         try (Stream<String> lines = Files.lines(catalogJsonl)) {
             List<String> documents = lines.filter(line -> !line.isBlank()).toList();
+            Pattern putId = Pattern.compile("id:([^:]+):([^:]+)::(.+)");
             for (String line : documents) {
                 JsonNode document = MAPPER.readTree(line);
                 String id = document.path("put").asText();
-                String[] namespaceTypeAndLocalId = id.split(":", 5);
-                String path = "/document/v1/" + namespaceTypeAndLocalId[1] + "/" + namespaceTypeAndLocalId[2] + "/docid/" + URLEncoder.encode(namespaceTypeAndLocalId[4], StandardCharsets.UTF_8);
+                Matcher parts = putId.matcher(id);
+                if (!parts.matches()) {
+                    throw new IllegalStateException("Only put lines with id:<namespace>:<type>::<local id> are supported: " + line);
+                }
+                String path = "/document/v1/" + parts.group(1) + "/" + parts.group(2) + "/docid/" + URLEncoder.encode(parts.group(3), StandardCharsets.UTF_8);
                 String body = MAPPER.writeValueAsString(MAPPER.createObjectNode().set("fields", document.path("fields")));
 
                 HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(url(8080) + path))
@@ -132,7 +140,7 @@ public class VespaContainer {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes); Stream<Path> files = Files.walk(dir)) {
             for (Path file : files.filter(Files::isRegularFile).toList()) {
-                zip.putNextEntry(new ZipEntry(dir.relativize(file).toString()));
+                zip.putNextEntry(new ZipEntry(dir.relativize(file).toString().replace(File.separatorChar, '/')));
                 Files.copy(file, zip);
                 zip.closeEntry();
             }
@@ -157,15 +165,16 @@ public class VespaContainer {
         }
     }
 
-    private static void await(String what, Callable<Boolean> ready) {
-        Instant deadline = Instant.now().plusSeconds(120);
+    /** Retries an attempt every second until it returns without throwing; the timeout error carries its last failure. */
+    static void await(String what, Duration timeout, Callable<?> attempt) {
+        Instant deadline = Instant.now().plus(timeout);
+        Exception last = null;
         while (Instant.now().isBefore(deadline)) {
             try {
-                if (ready.call()) {
-                    return;
-                }
+                attempt.call();
+                return;
             } catch (Exception notReadyYet) {
-                LOG.debug("Waiting for {}: {}", what, notReadyYet.getMessage());
+                last = notReadyYet;
             }
             try {
                 Thread.sleep(1000);
@@ -174,6 +183,17 @@ public class VespaContainer {
                 throw new IllegalStateException(e);
             }
         }
-        throw new IllegalStateException("Timed out after 120 s waiting for " + what);
+        throw new IllegalStateException("Timed out after " + timeout.toSeconds() + " s waiting for " + what + ", last answer: "
+            + (last == null ? "none" : last.getMessage()), last);
+    }
+
+    private static Callable<Void> answers(String url, Rethrow.PredicateChecked<HttpResponse<String>, Exception> ready) {
+        return () -> {
+            HttpResponse<String> response = send(get(url));
+            if (!ready.test(response)) {
+                throw new IllegalStateException(response.statusCode() + " " + response.body());
+            }
+            return null;
+        };
     }
 }
