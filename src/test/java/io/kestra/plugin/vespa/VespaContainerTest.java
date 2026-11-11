@@ -1,0 +1,120 @@
+package io.kestra.plugin.vespa;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.DoubleNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.LongNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.kestra.core.serializers.JacksonMapper;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class VespaContainerTest extends VespaContainer {
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+
+    @Test
+    void queryApiAnswersOnEndpoint() throws Exception {
+        HttpResponse<String> response = get(endpoint + "/status.html");
+
+        assertThat(endpoint, is("http://localhost:18080"));
+        assertThat(response.statusCode(), is(200));
+    }
+
+    @Test
+    void catalogIsFullyIndexed() throws Exception {
+        String yql = URLEncoder.encode("select * from music where true", StandardCharsets.UTF_8);
+
+        JsonNode root = json(get(endpoint + "/search/?hits=0&yql=" + yql)).path("root");
+
+        assertThat(root.path("fields").path("totalCount").asLong(), is((long) catalog().size()));
+    }
+
+    @Test
+    void everyCatalogDocumentRoundTrips() throws Exception {
+        List<JsonNode> catalog = catalog();
+
+        for (JsonNode expected : catalog) {
+            String localId = expected.path("put").asText().split("::", 2)[1];
+            String url = endpoint + "/document/v1/mynamespace/music/docid/" + URLEncoder.encode(localId, StandardCharsets.UTF_8) + "?format.tensors=short-value";
+
+            JsonNode actual = json(get(url));
+
+            assertThat(expected.path("put").asText(), atTensorFloatPrecision(actual.path("fields")), is(atTensorFloatPrecision(expected.path("fields"))));
+        }
+        assertThat(catalog.stream().map(d -> d.path("put").asText()).toList(), hasItem("id:mynamespace:music::liebe-ist-für-alle-da"));
+    }
+
+    @Test
+    void deployRejectionFailsWithBody(@TempDir Path app) throws Exception {
+        Files.writeString(app.resolve("services.xml"), "<services version=\"1.0\"><not-a-cluster/></services>");
+
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> deploy(app));
+
+        assertThat(e.getMessage(), allOf(containsString("400"), containsString("not-a-cluster")));
+    }
+
+    @Test
+    void feedRejectionFailsWithBody(@TempDir Path dir) throws Exception {
+        Path catalog = dir.resolve("bad.jsonl");
+        Files.writeString(catalog, "{\"put\": \"id:mynamespace:music::bad-doc\", \"fields\": {\"no_such_field\": 1}}\n");
+
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> feed(catalog));
+
+        assertThat(e.getMessage(), allOf(containsString("bad-doc"), containsString("400"), containsString("no_such_field")));
+    }
+
+    private static JsonNode atTensorFloatPrecision(JsonNode node) {
+        if (node.isNumber()) {
+            double value = node.doubleValue();
+            return value == Math.rint(value) ? LongNode.valueOf(node.longValue()) : DoubleNode.valueOf((float) value);
+        }
+        if (node.isObject()) {
+            ObjectNode copy = JsonNodeFactory.instance.objectNode();
+            node.properties().forEach(e -> copy.set(e.getKey(), atTensorFloatPrecision(e.getValue())));
+            return copy;
+        }
+        if (node.isArray()) {
+            ArrayNode copy = JsonNodeFactory.instance.arrayNode();
+            node.forEach(item -> copy.add(atTensorFloatPrecision(item)));
+            return copy;
+        }
+        return node;
+    }
+
+    private static List<JsonNode> catalog() throws Exception {
+        Path path = Path.of(VespaContainerTest.class.getClassLoader().getResource("vespa/catalog.jsonl").toURI());
+        return Files.readAllLines(path).stream().filter(l -> !l.isBlank()).map(VespaContainerTest::parse).toList();
+    }
+
+    private static HttpResponse<String> get(String url) throws Exception {
+        return HTTP.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static JsonNode json(HttpResponse<String> response) {
+        assertThat(response.body(), response.statusCode(), is(200));
+        return parse(response.body());
+    }
+
+    private static JsonNode parse(String body) {
+        try {
+            return JacksonMapper.ofJson().readTree(body);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+}

@@ -1,0 +1,65 @@
+# Music catalog for the plugin tests, based on Vespa's album-recommendation sample.
+schema music {
+
+    document music {
+
+        field artist type string {
+            indexing: summary | index
+        }
+
+        field album type string {
+            indexing: summary | index
+            index: enable-bm25
+        }
+
+        field year type int {
+            indexing: summary | attribute
+        }
+
+        # Exact-match filter and sort, like: where genre contains "jazz"
+        field genre type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        # Epoch milliseconds when the album was added to the catalog; the trigger polls on it
+        field added_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        field category_scores type tensor<float>(cat{}) {
+            indexing: summary | attribute
+        }
+
+        # Small hand-made vector, close within a genre, for nearestNeighbor queries
+        field embedding type tensor<float>(x[4]) {
+            indexing: summary | attribute
+            attribute {
+                distance-metric: euclidean
+            }
+        }
+    }
+
+    fieldset default {
+        fields: artist, album
+    }
+
+    rank-profile rank_albums inherits default {
+        inputs {
+            query(user_profile) tensor<float>(cat{})
+        }
+        first-phase {
+            expression: bm25(album) + 0.25 * sum(query(user_profile) * attribute(category_scores))
+        }
+    }
+
+    rank-profile closeness inherits default {
+        inputs {
+            query(q) tensor<float>(x[4])
+        }
+        first-phase {
+            expression: closeness(field, embedding)
+        }
+    }
+}
