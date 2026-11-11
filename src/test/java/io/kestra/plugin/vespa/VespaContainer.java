@@ -187,7 +187,8 @@ public class VespaContainer {
             + (last == null ? "none" : last.getMessage()), last);
     }
 
-    private static Callable<Void> answers(String url, Rethrow.PredicateChecked<HttpResponse<String>, Exception> ready) {
+    /** An attempt for {@link #await} that fails with the status and body until the answer passes the check. */
+    static Callable<Void> answers(String url, Rethrow.PredicateChecked<HttpResponse<String>, Exception> ready) {
         return () -> {
             HttpResponse<String> response = send(get(url));
             if (!ready.test(response)) {

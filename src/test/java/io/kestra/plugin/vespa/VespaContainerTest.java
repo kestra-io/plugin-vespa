@@ -96,17 +96,15 @@ class VespaContainerTest extends VespaContainer {
 
             assertThat(e.getMessage(), containsString(line));
         }
-        assertThat(get(endpoint + "/document/v1/mynamespace/music/number/1/numbered").statusCode(), is(404));
+        assertThat(get(endpoint + "/document/v1/mynamespace/music/docid/numbered").statusCode(), is(404));
     }
 
     @Test
     void awaitTimeoutNamesLastAnswer() {
         IllegalStateException e = assertThrows(IllegalStateException.class,
-            () -> await("the moon", Duration.ofSeconds(1), () -> {
-                throw new IllegalStateException("503 not converged yet");
-            }));
+            () -> await("a missing page", Duration.ofSeconds(1), answers(endpoint + "/no-such-path", r -> r.statusCode() == 200)));
 
-        assertThat(e.getMessage(), allOf(containsString("the moon"), containsString("503 not converged yet")));
+        assertThat(e.getMessage(), allOf(containsString("a missing page"), containsString("last answer: 404")));
     }
 
     private static JsonNode atTensorFloatPrecision(JsonNode node) {
