@@ -1,6 +1,5 @@
 package io.kestra.plugin.vespa;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.PortBinding;
@@ -33,17 +32,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/**
- * Shared Vespa for the plugin tests: one container per test JVM, with the test application and the music catalog,
- * so every task test asserts against the same known data. The memory check is skipped because the image refuses to
- * start under 4 GB free, far more than the test data needs.
- */
 @KestraTest
 public class VespaContainer {
     private static final Logger LOG = LoggerFactory.getLogger(VespaContainer.class);
@@ -54,6 +47,7 @@ public class VespaContainer {
     static {
         VESPA = new GenericContainer<>(DockerImageName.parse("vespaengine/vespa:8.781.11"))
             .withExposedPorts(8080, 19071)
+            // the image refuses to start under 4 GB of free memory, far more than the test data needs
             .withEnv("VESPA_IGNORE_NOT_ENOUGH_MEMORY", "true")
             .withCreateContainerCmdModifier(cmd -> cmd
                 .withHostName("vespa-container")
@@ -78,49 +72,47 @@ public class VespaContainer {
     @Value("${vespa-endpoint}")
     protected String endpoint;
 
-    /** Deploys an application package through the config server API, as no Vespa CLI runs in CI. */
     static void deploy(Path applicationDir) {
-        String configServer = url(19071);
-        HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(configServer + "/application/v2/tenant/default/prepareandactivate"))
+        var configServer = url(19071);
+        var response = send(HttpRequest.newBuilder(URI.create(configServer + "/application/v2/tenant/default/prepareandactivate"))
             .header("Content-Type", "application/zip")
             .POST(HttpRequest.BodyPublishers.ofByteArray(zip(applicationDir)))
             .build());
         if (response.statusCode() != 200) {
-            throw new IllegalStateException("Deploy failed: " + response.statusCode() + " " + response.body());
+            throw new IllegalStateException("The config server refused the application package with status %d: %s".formatted(response.statusCode(), response.body()));
         }
 
-        String converge = configServer + "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default/serviceconverge";
+        var converge = configServer + "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default/serviceconverge";
         await("application convergence", Duration.ofSeconds(120), answers(converge, r -> MAPPER.readTree(r.body()).path("converged").asBoolean()));
         await("query API", Duration.ofSeconds(120), answers(url(8080) + "/status.html", r -> r.statusCode() == 200));
         LOG.info("Deployed {}", applicationDir);
     }
 
-    /** Feeds a JSON Lines file of Vespa put operations through the document API, one document per request. */
     static void feed(Path catalogJsonl) {
         try (Stream<String> lines = Files.lines(catalogJsonl)) {
-            List<String> documents = lines.filter(line -> !line.isBlank()).toList();
-            Pattern putId = Pattern.compile("id:([^:]+):([^:]+)::(.+)");
+            var documents = lines.filter(line -> !line.isBlank()).toList();
+            var putId = Pattern.compile("id:([^:]+):([^:]+)::(.+)");
             for (String line : documents) {
-                JsonNode document = MAPPER.readTree(line);
-                String id = document.path("put").asText();
-                Matcher parts = putId.matcher(id);
+                var document = MAPPER.readTree(line);
+                var id = document.path("put").asText();
+                var parts = putId.matcher(id);
                 if (!parts.matches()) {
-                    throw new IllegalStateException("Only put lines with id:<namespace>:<type>::<local id> are supported: " + line);
+                    throw new IllegalStateException("Only put lines with an id:<namespace>:<type>::<local id> id can be fed, got: %s".formatted(line));
                 }
-                String path = "/document/v1/" + parts.group(1) + "/" + parts.group(2) + "/docid/" + URLEncoder.encode(parts.group(3), StandardCharsets.UTF_8);
-                String body = MAPPER.writeValueAsString(MAPPER.createObjectNode().set("fields", document.path("fields")));
+                var path = "/document/v1/" + parts.group(1) + "/" + parts.group(2) + "/docid/" + URLEncoder.encode(parts.group(3), StandardCharsets.UTF_8);
+                var body = MAPPER.writeValueAsString(MAPPER.createObjectNode().set("fields", document.path("fields")));
 
-                HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(url(8080) + path))
+                var response = send(HttpRequest.newBuilder(URI.create(url(8080) + path))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build());
                 if (response.statusCode() != 200) {
-                    throw new IllegalStateException("Feed failed for " + id + ": " + response.statusCode() + " " + response.body());
+                    throw new IllegalStateException("Vespa refused document %s with status %d: %s".formatted(id, response.statusCode(), response.body()));
                 }
             }
             LOG.info("Fed {} documents from {}", documents.size(), catalogJsonl);
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot read " + catalogJsonl, e);
+            throw new IllegalStateException("Cannot read the catalog %s.".formatted(catalogJsonl), e);
         }
     }
 
@@ -137,7 +129,7 @@ public class VespaContainer {
     }
 
     private static byte[] zip(Path dir) {
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        var bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes); Stream<Path> files = Files.walk(dir)) {
             for (Path file : files.filter(Files::isRegularFile).toList()) {
                 zip.putNextEntry(new ZipEntry(dir.relativize(file).toString().replace(File.separatorChar, '/')));
@@ -145,7 +137,7 @@ public class VespaContainer {
                 zip.closeEntry();
             }
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot zip " + dir, e);
+            throw new IllegalStateException("Cannot zip the application package %s.".formatted(dir), e);
         }
         return bytes.toByteArray();
     }
@@ -158,16 +150,16 @@ public class VespaContainer {
         try {
             return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new IllegalStateException(request.method() + " " + request.uri() + " failed", e);
+            throw new IllegalStateException("%s %s failed.".formatted(request.method(), request.uri()), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }
     }
 
-    /** Retries an attempt every second until it returns without throwing; the timeout error carries its last failure. */
+    /** Ready means {@code attempt} returned without throwing; on timeout, the error carries its last failure. */
     static void await(String what, Duration timeout, Callable<?> attempt) {
-        Instant deadline = Instant.now().plus(timeout);
+        var deadline = Instant.now().plus(timeout);
         Exception last = null;
         while (Instant.now().isBefore(deadline)) {
             try {
@@ -177,22 +169,22 @@ public class VespaContainer {
                 last = notReadyYet;
             }
             try {
-                Thread.sleep(1000);
+                Thread.sleep(Duration.ofSeconds(1));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException(e);
             }
         }
-        throw new IllegalStateException("Timed out after " + timeout.toSeconds() + " s waiting for " + what + ", last answer: "
-            + (last == null ? "none" : last.getMessage()), last);
+        throw new IllegalStateException("Timed out after %d s waiting for %s, last answer: %s".formatted(
+            timeout.toSeconds(), what, last == null ? "none" : last.getMessage()), last);
     }
 
-    /** An attempt for {@link #await} that fails with the status and body until the answer passes the check. */
+    /** Throws the response status and body while {@code ready} is false. */
     static Callable<Void> answers(String url, Rethrow.PredicateChecked<HttpResponse<String>, Exception> ready) {
         return () -> {
-            HttpResponse<String> response = send(get(url));
+            var response = send(get(url));
             if (!ready.test(response)) {
-                throw new IllegalStateException(response.statusCode() + " " + response.body());
+                throw new IllegalStateException("%d %s".formatted(response.statusCode(), response.body()));
             }
             return null;
         };
