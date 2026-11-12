@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -137,10 +138,34 @@ class VespaConnectionTest extends VespaContainer {
     }
 
     @Test
-    void endpointWithoutScheme() {
-        var e = assertThrows(IllegalArgumentException.class, () -> probe("localhost:18080").request(runContextFactory.of(), get("/search/")));
+    void endpointNotAnHttpUrl() {
+        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1")) {
+            var e = assertThrows(IllegalArgumentException.class, () -> probe(invalid).request(runContextFactory.of(), get("/search/")));
 
-        assertThat(e.getMessage(), containsString("'localhost:18080'"));
+            assertThat(e.getMessage(), containsString("got: '" + invalid + "'"));
+        }
+    }
+
+    @Test
+    void requestKeepsMethodHeadersAndBody() throws Exception {
+        var seen = new ArrayList<Seen>();
+        var stub = stub(seen);
+        try {
+            var request = HttpRequest.builder()
+                .uri(URI.create("/document/v1/music/music/docid/1"))
+                .method("POST")
+                .addHeader("X-Probe", "kept")
+                .body(HttpRequest.JsonRequestBody.builder().content(Map.of("fields", Map.of("album", "Kind of Blue"))).build());
+
+            probe("HTTP://localhost:" + stub.getAddress().getPort()).request(runContextFactory.of(), request);
+
+            assertThat(seen.getFirst().method(), is("POST"));
+            assertThat(seen.getFirst().probeHeader(), is("kept"));
+            assertThat(seen.getFirst().body(), is("""
+                {"fields":{"album":"Kind of Blue"}}"""));
+        } finally {
+            stub.stop(0);
+        }
     }
 
     @Test
@@ -220,7 +245,13 @@ class VespaConnectionTest extends VespaContainer {
     private static HttpServer stub(Duration delay, int status, String location, List<Seen> seen) throws Exception {
         var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
-            seen.add(new Seen(exchange.getRequestURI().getPath(), exchange.getRequestHeaders().get("Authorization")));
+            seen.add(new Seen(
+                exchange.getRequestMethod(),
+                exchange.getRequestURI().getPath(),
+                exchange.getRequestHeaders().get("Authorization"),
+                exchange.getRequestHeaders().getFirst("X-Probe"),
+                new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)
+            ));
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
@@ -238,7 +269,7 @@ class VespaConnectionTest extends VespaContainer {
         return server;
     }
 
-    private record Seen(String path, List<String> authorization) {
+    private record Seen(String method, String path, List<String> authorization, String probeHeader, String body) {
     }
 
     @SuperBuilder

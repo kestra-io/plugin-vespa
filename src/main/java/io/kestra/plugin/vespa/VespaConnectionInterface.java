@@ -17,9 +17,7 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.time.Duration;
-import java.util.List;
 import java.util.stream.IntStream;
 
 /**
@@ -82,16 +80,11 @@ public interface VespaConnectionInterface {
     }
 
     private String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
-        var rEndpoint = StringUtils.stripEnd(runContext.render(getEndpoint()).as(String.class).orElse(""), "/");
-        var message = "The Vespa endpoint must be an http or https URL, like http://localhost:8080, got: '%s'.".formatted(rEndpoint);
-        try {
-            var uri = new URI(rEndpoint);
-            if (!List.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null) {
-                throw new IllegalArgumentException(message);
-            }
-            return rEndpoint;
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException(message, e);
+        var rEndpoint = runContext.render(getEndpoint()).as(String.class).orElse("");
+        // a query would end up before the request path, so only scheme, host and an optional path prefix are allowed
+        if (!rEndpoint.matches("(?i)https?://[^/?#]+(/[^?#]*)?")) {
+            throw new IllegalArgumentException("The Vespa endpoint must be an http or https URL, like http://localhost:8080, got: '%s'.".formatted(rEndpoint));
         }
+        return StringUtils.stripEnd(rEndpoint, "/");
     }
 }
