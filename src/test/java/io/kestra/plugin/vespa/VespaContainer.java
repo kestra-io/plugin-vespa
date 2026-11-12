@@ -10,8 +10,7 @@ import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.Rethrow;
 import io.micronaut.context.annotation.Value;
 import jakarta.inject.Inject;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
@@ -38,8 +37,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 @KestraTest
+@Slf4j
 public class VespaContainer {
-    private static final Logger LOG = LoggerFactory.getLogger(VespaContainer.class);
     private static final HttpClient HTTP = HttpClient.newHttpClient();
     private static final ObjectMapper MAPPER = JacksonMapper.ofJson();
     private static final GenericContainer<?> VESPA;
@@ -85,7 +84,7 @@ public class VespaContainer {
         var converge = configServer + "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default/serviceconverge";
         await("application convergence", Duration.ofSeconds(120), answers(converge, r -> MAPPER.readTree(r.body()).path("converged").asBoolean()));
         await("query API", Duration.ofSeconds(120), answers(url(8080) + "/status.html", r -> r.statusCode() == 200));
-        LOG.info("Deployed {}", applicationDir);
+        log.info("Deployed {}", applicationDir);
     }
 
     static void feed(Path catalogJsonl) {
@@ -110,7 +109,7 @@ public class VespaContainer {
                     throw new IllegalStateException("Vespa refused document %s with status %d: %s".formatted(id, response.statusCode(), response.body()));
                 }
             }
-            LOG.info("Fed {} documents from {}", documents.size(), catalogJsonl);
+            log.info("Fed {} documents from {}", documents.size(), catalogJsonl);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read the catalog %s.".formatted(catalogJsonl), e);
         }
