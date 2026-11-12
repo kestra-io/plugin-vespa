@@ -50,14 +50,13 @@ public interface VespaConnectionInterface {
     /**
      * Sends a request whose URI is a path and query relative to the endpoint; any answer other than 2xx throws with its status and body.
      */
-    default HttpResponse<String> request(RunContext runContext, HttpRequest.HttpRequestBuilder request)
+    default HttpResponse<String> request(RunContext runContext, HttpRequest request)
         throws IllegalVariableEvaluationException, IOException, HttpClientException {
-        var relative = request.build();
         var httpRequest = HttpRequest.builder()
-            .method(relative.getMethod())
-            .uri(URI.create(endpoint(runContext) + relative.getUri()))
-            .headers(relative.getHeaders())
-            .body(relative.getBody())
+            .method(request.getMethod())
+            .uri(URI.create(endpoint(runContext) + request.getUri()))
+            .headers(request.getHeaders())
+            .body(request.getBody())
             .build();
 
         var timeout = TimeoutConfiguration.builder().connectTimeout(getConnectTimeout());
