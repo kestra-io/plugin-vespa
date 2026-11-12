@@ -1,5 +1,6 @@
 package io.kestra.plugin.vespa;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.kestra.core.http.HttpRequest;
@@ -25,6 +26,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @SuperBuilder
 @ToString
@@ -119,7 +121,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
 
     @Schema(
         title = "Other query API parameters",
-        description = "Sent as they are, like `input.query(q)` for a query tensor or `presentation.format.tensors: short-value`. A parameter also set by a property of this task fails the task."
+        description = "Sent as they are, like `input.query(q)` for a query tensor or `presentation.format.tensors: short-value`. A parameter also set by a property of this task, by name or by Vespa's alias (`count`, `start`, `ranking.profile`, `model.queryString`), fails the task."
     )
     @PluginProperty(group = "advanced")
     private Property<Map<String, Object>> parameters;
@@ -142,16 +144,16 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         var request = HttpRequest.builder()
             .uri(URI.create("/search/"))
             .method("POST")
-            .body(HttpRequest.JsonRequestBody.builder().content(body(runContext)).build())
+            .body(HttpRequest.JsonRequestBody.of(body(runContext)))
             .build();
         var answer = request(runContext, request).getBody();
         if (answer == null || answer.isBlank()) {
             throw new IllegalStateException("Vespa sent an empty answer to the query.");
         }
 
-        var root = JacksonMapper.ofJson().readTree(answer).path("root");
+        var root = root(answer);
         // degraded coverage (like a soft timeout) still returns usable hits, so Vespa's errors are shown, not thrown
-        root.path("errors").forEach(error -> runContext.logger().warn("Vespa answered with an error: {}", error.path("message").asText()));
+        root.path("errors").forEach(error -> runContext.logger().warn("Vespa answered with an error: {}: {}", error.path("summary").asText(), error.path("message").asText()));
 
         var rows = rows(runContext, root);
         runContext.metric(Counter.of("records", rows.size()));
@@ -164,6 +166,19 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         };
     }
 
+    private static JsonNode root(String answer) {
+        JsonNode json;
+        try {
+            json = JacksonMapper.ofJson().readTree(answer);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Vespa's answer to the query isn't JSON: %s".formatted(answer), e);
+        }
+        if (!json.has("root")) {
+            throw new IllegalStateException("Vespa's answer to the query has no root: %s".formatted(answer));
+        }
+        return json.get("root");
+    }
+
     private Map<String, Object> body(RunContext runContext) throws Exception {
         var body = new HashMap<String, Object>();
         body.put("yql", runContext.render(yql).as(String.class).orElseThrow());
@@ -173,9 +188,12 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         runContext.render(ranking).as(String.class).ifPresent(v -> body.put("ranking", v));
         runContext.render(queryTimeout).as(Duration.class).ifPresent(v -> body.put("timeout", v.toMillis() + "ms"));
 
+        var setByProperties = Set.copyOf(body.keySet());
+        var aliases = Map.of("count", "hits", "start", "offset", "ranking.profile", "ranking", "model.queryString", "query");
         for (var parameter : runContext.render(parameters).asMap(String.class, Object.class).entrySet()) {
-            if (body.containsKey(parameter.getKey())) {
-                throw new IllegalArgumentException("The parameter '%s' is also set by a property of the task; set it in one place only.".formatted(parameter.getKey()));
+            var property = aliases.getOrDefault(parameter.getKey(), parameter.getKey());
+            if (setByProperties.contains(property)) {
+                throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(parameter.getKey(), property));
             }
             body.put(parameter.getKey(), parameter.getValue());
         }
@@ -185,7 +203,9 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     private static List<Map<String, Object>> rows(RunContext runContext, JsonNode root) {
         var rows = new ArrayList<Map<String, Object>>();
         for (var hit : root.path("children")) {
-            var fields = JacksonMapper.ofJson().convertValue(hit.path("fields"), new TypeReference<LinkedHashMap<String, Object>>() {});
+            var fields = hit.path("fields").isObject()
+                ? JacksonMapper.ofJson().convertValue(hit.get("fields"), new TypeReference<LinkedHashMap<String, Object>>() {})
+                : new LinkedHashMap<String, Object>();
             fields.remove("sddocname");
             fields.remove("documentid");
             var clashes = fields.keySet().stream().filter(name -> name.equals("id") || name.equals("relevance")).toList();

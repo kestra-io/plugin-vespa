@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.models.validations.ModelValidator;
@@ -24,7 +25,7 @@ import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class QueryTest extends VespaContainer {
-    private static final String JAZZ = "select * from music where genre contains \"jazz\"";
+    private static final String CONTAINS_JAZZ_QUERY = "select * from music where genre contains \"jazz\"";
     private static final String NO_HIT = "select * from music where genre contains \"nope\"";
 
     @Inject
@@ -32,12 +33,14 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetch() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(JAZZ)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
         var runContext = runContextFactory.of();
 
         var output = task.run(runContext);
 
-        assertThat(output.getRows(), is(rowsOf(search(Map.of("yql", JAZZ)))));
+        var expected = rowsOf(search(Map.of("yql", CONTAINS_JAZZ_QUERY)));
+        assertThat(output.getRows(), is(expected));
+        assertThat(List.copyOf(output.getRows().getFirst().keySet()), is(List.copyOf(expected.getFirst().keySet())));
         assertThat(output.getSize(), is(6));
         assertThat(output.getTotalCount(), is(6L));
         assertThat(output.getRows().getFirst(), allOf(hasKey("id"), hasKey("relevance"), hasKey("album"), not(hasKey("sddocname")), not(hasKey("documentid")), not(hasKey("source")), not(hasKey("fields"))));
@@ -46,11 +49,11 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetchOne() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(JAZZ)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
 
         var output = task.run(runContextFactory.of());
 
-        assertThat(output.getRow(), is(rowsOf(search(Map.of("yql", JAZZ))).getFirst()));
+        assertThat(output.getRow(), is(rowsOf(search(Map.of("yql", CONTAINS_JAZZ_QUERY))).getFirst()));
         assertThat(output.getSize(), is(1));
         assertThat(output.getRows(), is(nullValue()));
         assertThat(output.getTotalCount(), is(6L));
@@ -80,7 +83,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void none() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(JAZZ)).fetchType(Property.ofValue(FetchType.NONE)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.NONE)).build();
 
         var output = task.run(runContextFactory.of());
 
@@ -132,7 +135,7 @@ class QueryTest extends VespaContainer {
             {"root": {"fields": {"totalCount": 0}}}""")) {
             var task = Query.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
-                .yql(Property.ofValue(JAZZ))
+                .yql(Property.ofValue(CONTAINS_JAZZ_QUERY))
                 .query(Property.ofValue("blue"))
                 .hits(Property.ofValue(3))
                 .offset(Property.ofValue(1))
@@ -147,7 +150,7 @@ class QueryTest extends VespaContainer {
             assertThat(seen.method(), is("POST"));
             assertThat(seen.path(), is("/search/"));
             assertThat(JacksonMapper.ofJson().readValue(seen.body(), new TypeReference<Map<String, Object>>() {}), is(Map.of(
-                "yql", JAZZ,
+                "yql", CONTAINS_JAZZ_QUERY,
                 "query", "blue",
                 "hits", 3,
                 "offset", 1,
@@ -162,11 +165,11 @@ class QueryTest extends VespaContainer {
     void unsetPropertiesNotSent() throws Exception {
         try (var stub = VespaStub.answering("""
             {"root": {"fields": {"totalCount": 0}}}""")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(JAZZ)).build();
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
             task.run(runContextFactory.of());
 
-            assertThat(JacksonMapper.ofJson().readValue(stub.seen().getFirst().body(), new TypeReference<Map<String, Object>>() {}), is(Map.of("yql", JAZZ)));
+            assertThat(JacksonMapper.ofJson().readValue(stub.seen().getFirst().body(), new TypeReference<Map<String, Object>>() {}), is(Map.of("yql", CONTAINS_JAZZ_QUERY)));
         }
     }
 
@@ -175,7 +178,7 @@ class QueryTest extends VespaContainer {
         try (var stub = VespaStub.start()) {
             var task = Query.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
-                .yql(Property.ofValue(JAZZ))
+                .yql(Property.ofValue(CONTAINS_JAZZ_QUERY))
                 .hits(Property.ofValue(3))
                 .parameters(Property.ofValue(Map.of("hits", 5)))
                 .build();
@@ -188,10 +191,40 @@ class QueryTest extends VespaContainer {
     }
 
     @Test
+    void parameterAliasClashesWithProperty() throws Exception {
+        try (var stub = VespaStub.start()) {
+            var cases = Map.of(
+                "count", Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).hits(Property.ofValue(3)).parameters(Property.ofValue(Map.of("count", 1))).build(),
+                "start", Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).offset(Property.ofValue(0)).parameters(Property.ofValue(Map.of("start", 5))).build(),
+                "ranking.profile", Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).ranking(Property.ofValue("closeness")).parameters(Property.ofValue(Map.of("ranking.profile", "default"))).build(),
+                "model.queryString", Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).query(Property.ofValue("blue")).parameters(Property.ofValue(Map.of("model.queryString", "red"))).build()
+            );
+            for (var aliasAndTask : cases.entrySet()) {
+                var e = assertThrows(IllegalArgumentException.class, () -> aliasAndTask.getValue().run(runContextFactory.of()), aliasAndTask.getKey());
+
+                assertThat(aliasAndTask.getKey(), e.getMessage(), containsString("'" + aliasAndTask.getKey() + "'"));
+            }
+            assertThat(stub.seen(), is(empty()));
+        }
+    }
+
+    @Test
+    void aliasWithItsPropertyUnsetIsSent() throws Exception {
+        try (var stub = VespaStub.answering("""
+            {"root": {"fields": {"totalCount": 0}}}""")) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).parameters(Property.ofValue(Map.of("count", 1))).build();
+
+            task.run(runContextFactory.of());
+
+            assertThat(JacksonMapper.ofJson().readValue(stub.seen().getFirst().body(), new TypeReference<Map<String, Object>>() {}), is(Map.of("yql", CONTAINS_JAZZ_QUERY, "count", 1)));
+        }
+    }
+
+    @Test
     void invalidYql() {
         var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue("select * frm music")).build();
 
-        var e = assertThrows(Exception.class, () -> task.run(runContextFactory.of()));
+        var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
 
         assertThat(e.getMessage(), allOf(containsString("400"), containsString("mismatched input 'frm'")));
     }
@@ -199,11 +232,54 @@ class QueryTest extends VespaContainer {
     @Test
     void emptyAnswer() throws Exception {
         try (var stub = VespaStub.answering("")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(JAZZ)).build();
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
             assertThat(e.getMessage(), containsString("empty answer"));
+        }
+    }
+
+    @Test
+    void answerWithoutRoot() throws Exception {
+        try (var stub = VespaStub.answering("{}")) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), containsString("no root"));
+        }
+    }
+
+    @Test
+    void answerNotJson() throws Exception {
+        try (var stub = VespaStub.answering("<html>Bad gateway</html>")) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), allOf(containsString("isn't JSON"), containsString("<html>Bad gateway</html>")));
+        }
+    }
+
+    @Test
+    void hitWithoutFields() throws Exception {
+        try (var stub = VespaStub.answering("""
+            {"root": {
+              "fields": {"totalCount": 30},
+              "children": [
+                {"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": []},
+                {"id": "id:mynamespace:music::kind-of-blue", "relevance": 0.5, "fields": null}
+              ]
+            }}""")) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+
+            var output = task.run(runContextFactory.of());
+
+            assertThat(output.getRows(), is(List.of(
+                Map.of("id", "group:root:0", "relevance", 1.0),
+                Map.of("id", "id:mynamespace:music::kind-of-blue", "relevance", 0.5)
+            )));
         }
     }
 
@@ -216,14 +292,14 @@ class QueryTest extends VespaContainer {
               "errors": [{"code": 12, "summary": "Timed out", "message": "Missing hits from 1 of 2 nodes"}],
               "children": [{"id": "id:mynamespace:music::kind-of-blue", "relevance": 0.5, "fields": {"album": "Kind of Blue"}}]
             }}""")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(JAZZ)).build();
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
             var runContext = runContextFactory.of();
             var logs = capture(runContext);
 
             var output = task.run(runContext);
 
             assertThat(output.getRows(), is(List.of(Map.of("id", "id:mynamespace:music::kind-of-blue", "relevance", 0.5, "album", "Kind of Blue"))));
-            assertThat(warnings(logs), hasItem(containsString("Missing hits from 1 of 2 nodes")));
+            assertThat(warnings(logs), hasItem(allOf(containsString("Timed out"), containsString("Missing hits from 1 of 2 nodes"))));
         }
     }
 
@@ -234,21 +310,21 @@ class QueryTest extends VespaContainer {
               "fields": {"totalCount": 1},
               "children": [{"id": "id:mynamespace:music::kind-of-blue", "relevance": 0.5, "fields": {"id": "mine", "relevance": "high", "album": "Kind of Blue"}}]
             }}""")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(JAZZ)).build();
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
             var runContext = runContextFactory.of();
             var logs = capture(runContext);
 
             var output = task.run(runContext);
 
             assertThat(output.getRows(), is(List.of(Map.of("id", "id:mynamespace:music::kind-of-blue", "relevance", 0.5, "album", "Kind of Blue"))));
-            assertThat(warnings(logs), hasItem(allOf(containsString("id"), containsString("relevance"))));
+            assertThat(warnings(logs), hasItem(containsString("[id, relevance]")));
         }
     }
 
     @Test
     void storeNotSupported() throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(JAZZ)).fetchType(Property.ofValue(FetchType.STORE)).build();
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
 
             var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()));
 
@@ -267,7 +343,7 @@ class QueryTest extends VespaContainer {
         assertThat(violations.get().getMessage(), containsString("yql"));
     }
 
-    // Vespa's answer flattened by hand: the hit's id and relevance, then its fields without Vespa's own sddocname and documentid.
+    // Written out here rather than reusing Query's code, so a wrong row rule can't pass on both sides.
     private static List<Map<String, Object>> rowsOf(JsonNode answer) {
         var rows = new ArrayList<Map<String, Object>>();
         for (var hit : answer.at("/root/children")) {
