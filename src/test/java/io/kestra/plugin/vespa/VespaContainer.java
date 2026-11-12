@@ -1,5 +1,6 @@
 package io.kestra.plugin.vespa;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.runners.RunContextFactory;
@@ -25,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -102,6 +104,18 @@ public class VespaContainer {
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read the catalog %s.".formatted(catalogJsonl), e);
         }
+    }
+
+    /** Vespa's own answer to a query body, sent without the plugin: the expected side of the query tests. */
+    static JsonNode search(Map<String, Object> body) throws IOException {
+        var response = send(HttpRequest.newBuilder(URI.create(url(8080) + "/search/"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
+            .build());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Vespa refused the query with status %d: %s".formatted(response.statusCode(), response.body()));
+        }
+        return MAPPER.readTree(response.body());
     }
 
     private static String url(int containerPort) {

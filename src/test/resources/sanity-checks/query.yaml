@@ -1,0 +1,31 @@
+id: query
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+    defaults: "http://localhost:18080"
+
+tasks:
+  - id: jazz
+    type: io.kestra.plugin.vespa.Query
+    endpoint: "{{ inputs.endpoint }}"
+    yql: "select * from music where genre contains \"jazz\" order by year asc, added_at asc"
+    hits: 3
+
+  - id: nearest
+    type: io.kestra.plugin.vespa.Query
+    endpoint: "{{ inputs.endpoint }}"
+    yql: "select * from music where {targetHits:1}nearestNeighbor(embedding, q)"
+    ranking: closeness
+    parameters:
+      input.query(q): [0, 0, 1, 0]
+    fetchType: FETCH_ONE
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ outputs.jazz.size == 3 }}"
+      - "{{ outputs.jazz.totalCount == 6 }}"
+      - "{{ outputs.jazz.rows[0].album == 'Time Out' }}"
+      - "{{ outputs.nearest.row.genre == 'jazz' }}"
