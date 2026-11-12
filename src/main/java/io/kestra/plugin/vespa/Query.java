@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -173,7 +174,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Vespa's answer to the query isn't JSON: %s".formatted(answer), e);
         }
-        if (!json.has("root")) {
+        if (!json.path("root").isObject()) {
             throw new IllegalStateException("Vespa's answer to the query has no root: %s".formatted(answer));
         }
         return json.get("root");
@@ -189,9 +190,11 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         runContext.render(queryTimeout).as(Duration.class).ifPresent(v -> body.put("timeout", v.toMillis() + "ms"));
 
         var setByProperties = Set.copyOf(body.keySet());
-        var aliases = Map.of("count", "hits", "start", "offset", "ranking.profile", "ranking", "model.queryString", "query");
+        var aliases = Map.of("count", "hits", "start", "offset", "ranking.profile", "ranking", "model.querystring", "query");
         for (var parameter : runContext.render(parameters).asMap(String.class, Object.class).entrySet()) {
-            var property = aliases.getOrDefault(parameter.getKey(), parameter.getKey());
+            // Vespa reads query parameter names in any case
+            var name = parameter.getKey().toLowerCase(Locale.ROOT);
+            var property = aliases.getOrDefault(name, name);
             if (setByProperties.contains(property)) {
                 throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(parameter.getKey(), property));
             }

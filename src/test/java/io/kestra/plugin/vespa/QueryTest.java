@@ -209,6 +209,37 @@ class QueryTest extends VespaContainer {
     }
 
     @Test
+    void parameterClashIgnoresCase() throws Exception {
+        try (var stub = VespaStub.start()) {
+            for (var key : List.of("HITS", "Count")) {
+                var task = Query.builder()
+                    .endpoint(Property.ofValue(stub.endpoint()))
+                    .yql(Property.ofValue(CONTAINS_JAZZ_QUERY))
+                    .hits(Property.ofValue(3))
+                    .parameters(Property.ofValue(Map.of(key, 1)))
+                    .build();
+
+                var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()), key);
+
+                assertThat(key, e.getMessage(), containsString("'" + key + "'"));
+            }
+            assertThat(stub.seen(), is(empty()));
+        }
+    }
+
+    @Test
+    void parametersNeverClashWithEachOther() throws Exception {
+        try (var stub = VespaStub.answering("""
+            {"root": {"fields": {"totalCount": 0}}}""")) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).parameters(Property.ofValue(Map.of("hits", 3, "count", 1))).build();
+
+            task.run(runContextFactory.of());
+
+            assertThat(JacksonMapper.ofJson().readValue(stub.seen().getFirst().body(), new TypeReference<Map<String, Object>>() {}), is(Map.of("yql", CONTAINS_JAZZ_QUERY, "hits", 3, "count", 1)));
+        }
+    }
+
+    @Test
     void aliasWithItsPropertyUnsetIsSent() throws Exception {
         try (var stub = VespaStub.answering("""
             {"root": {"fields": {"totalCount": 0}}}""")) {
@@ -242,12 +273,16 @@ class QueryTest extends VespaContainer {
 
     @Test
     void answerWithoutRoot() throws Exception {
-        try (var stub = VespaStub.answering("{}")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+        for (var answer : List.of("{}", """
+            {"root": null}""", """
+            {"root": 5}""")) {
+            try (var stub = VespaStub.answering(answer)) {
+                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
-            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), answer);
 
-            assertThat(e.getMessage(), containsString("no root"));
+                assertThat(answer, e.getMessage(), containsString("no root"));
+            }
         }
     }
 
