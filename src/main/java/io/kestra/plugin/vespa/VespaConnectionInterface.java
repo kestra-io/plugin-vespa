@@ -81,8 +81,8 @@ public interface VespaConnectionInterface {
 
     private String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
         var rEndpoint = runContext.render(getEndpoint()).as(String.class).orElse("");
-        // a query would end up before the request path, so only scheme, host and an optional path prefix are allowed
-        if (!rEndpoint.matches("(?i)https?://[^/?#]+(/[^?#]*)?")) {
+        // a query would end up before the request path, so only scheme, host, port and an optional path prefix are allowed
+        if (!rEndpoint.matches("(?i)https?://(\\[[^]]+]|[^/?#@:\\s\\[\\]]+)(:\\d+)?(/[^?#\\s]*)?")) {
             throw new IllegalArgumentException("The Vespa endpoint must be an http or https URL, like http://localhost:8080, got: '%s'.".formatted(rEndpoint));
         }
         return StringUtils.stripEnd(rEndpoint, "/");

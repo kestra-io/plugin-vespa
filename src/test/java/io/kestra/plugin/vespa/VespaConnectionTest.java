@@ -139,8 +139,8 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void endpointNotAnHttpUrl() {
-        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1")) {
-            var e = assertThrows(IllegalArgumentException.class, () -> probe(invalid).request(runContextFactory.of(), get("/search/")));
+        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1", "http://:8080", "http://localhost:abc", "http://u:pw@localhost", "http://u@localhost")) {
+            var e = assertThrows(IllegalArgumentException.class, () -> probe(invalid).request(runContextFactory.of(), get("/search/")), invalid);
 
             assertThat(e.getMessage(), containsString("got: '" + invalid + "'"));
         }

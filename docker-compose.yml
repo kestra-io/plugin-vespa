@@ -6,11 +6,24 @@ services:
       context: .
       dockerfile: Dockerfile
     command: server local
+    user: "root"
     ports:
       - "8080:8080"
     volumes:
       - ./build/libs/:/app/plugins/
+      - kestra-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+    environment:
+      KESTRA_CONFIGURATION: |
+        kestra:
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
     # works around "Unable to create JFR repository directory using base
     # location (/tmp)" on some hosts, see kestra-io/kestra#17405
     tmpfs:
       - /tmp:exec
+
+volumes:
+  kestra-data:
