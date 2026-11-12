@@ -17,7 +17,10 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
+import java.util.List;
+import java.util.stream.IntStream;
 
 /**
  * Connection shared by the Vespa tasks and the trigger, which can't extend a task class.
@@ -25,7 +28,7 @@ import java.time.Duration;
 public interface VespaConnectionInterface {
     @Schema(
         title = "Vespa endpoint",
-        description = "Base URL of the Vespa container cluster serving the query and document APIs, like `http://localhost:8080` or a Vespa Cloud endpoint."
+        description = "Base URL of the Vespa container cluster serving the query and document APIs, like `http://localhost:8080` or a Vespa Cloud endpoint. A trailing `/` is ignored."
     )
     @NotNull
     @PluginProperty(group = "connection")
@@ -33,12 +36,12 @@ public interface VespaConnectionInterface {
 
     @Schema(
         title = "Data-plane token",
-        description = "Vespa Cloud data-plane token, sent as a bearer token. Leave empty for a self-hosted Vespa without authentication."
+        description = "Vespa Cloud data-plane token, sent as a bearer token. Unset or empty sends no token, for a self-hosted Vespa without authentication."
     )
     @PluginProperty(secret = true, group = "connection")
     Property<String> getToken();
 
-    @Schema(title = "The time allowed to connect to Vespa")
+    @Schema(title = "The time allowed to connect to Vespa", description = "Unset uses the Kestra HTTP client's default.")
     @PluginProperty(group = "connection")
     Property<Duration> getConnectTimeout();
 
@@ -47,25 +50,48 @@ public interface VespaConnectionInterface {
     Property<Duration> getReadTimeout();
 
     /**
-     * Sends a request whose URI is a path and query relative to the endpoint; a non-2xx answer throws with its status and body.
+     * Sends a request whose URI is a path and query relative to the endpoint; any answer other than 2xx throws with its status and body.
      */
     default HttpResponse<String> request(RunContext runContext, HttpRequest.HttpRequestBuilder request)
         throws IllegalVariableEvaluationException, IOException, HttpClientException {
-        var rEndpoint = StringUtils.removeEnd(runContext.render(getEndpoint()).as(String.class).orElseThrow(), "/");
-        var httpRequest = request.uri(URI.create(rEndpoint + request.build().getUri())).build();
+        var relative = request.build();
+        var httpRequest = HttpRequest.builder()
+            .method(relative.getMethod())
+            .uri(URI.create(endpoint(runContext) + relative.getUri()))
+            .headers(relative.getHeaders())
+            .body(relative.getBody())
+            .build();
 
+        var timeout = TimeoutConfiguration.builder().connectTimeout(getConnectTimeout());
+        if (getReadTimeout() != null) {
+            timeout.readIdleTimeout(getReadTimeout());
+        }
         var configuration = HttpConfiguration.builder()
-            .timeout(TimeoutConfiguration.builder()
-                .connectTimeout(getConnectTimeout())
-                .readIdleTimeout(getReadTimeout() == null ? Property.ofValue(Duration.ofMinutes(5)) : getReadTimeout())
-                .build());
-        if (getToken() != null) {
-            configuration.auth(BearerAuthConfiguration.builder().token(getToken()).build());
+            .timeout(timeout.build())
+            // a redirect would carry the token to another host, and Vespa's APIs don't redirect
+            .followRedirects(Property.ofValue(false))
+            .allowedResponseCodes(Property.ofValue(IntStream.range(200, 300).boxed().toList()));
+        var rToken = runContext.render(getToken()).as(String.class).orElse("");
+        if (!rToken.isBlank()) {
+            configuration.auth(BearerAuthConfiguration.builder().token(Property.ofValue(rToken)).build());
         }
 
-        runContext.logger().debug("{} {}", httpRequest.getMethod(), httpRequest.getUri().getPath());
         try (var client = new HttpClient(runContext, configuration.build())) {
             return client.request(httpRequest, String.class);
+        }
+    }
+
+    private String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
+        var rEndpoint = StringUtils.stripEnd(runContext.render(getEndpoint()).as(String.class).orElse(""), "/");
+        var message = "The Vespa endpoint must be an http or https URL, like http://localhost:8080, got: '%s'.".formatted(rEndpoint);
+        try {
+            var uri = new URI(rEndpoint);
+            if (!List.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null) {
+                throw new IllegalArgumentException(message);
+            }
+            return rEndpoint;
+        } catch (URISyntaxException e) {
+            throw new IllegalArgumentException(message, e);
         }
     }
 }

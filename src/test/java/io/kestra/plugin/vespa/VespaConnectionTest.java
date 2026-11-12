@@ -44,10 +44,10 @@ class VespaConnectionTest extends VespaContainer {
     @Test
     void endpointWithTrailingSlash() throws Exception {
         var seen = new ArrayList<Seen>();
-        var stub = stub(Duration.ZERO, seen);
+        var stub = stub(seen);
         try {
             // a stub, not Vespa, because Vespa answers "//search/" like "/search/"
-            probe("http://localhost:" + stub.getAddress().getPort() + "/").request(runContextFactory.of(), get("/search/"));
+            probe("http://localhost:" + stub.getAddress().getPort() + "//").request(runContextFactory.of(), get("/search/"));
 
             assertThat(seen.getFirst().path(), is("/search/"));
         } finally {
@@ -58,7 +58,7 @@ class VespaConnectionTest extends VespaContainer {
     @Test
     void bearerToken() throws Exception {
         var seen = new ArrayList<Seen>();
-        var stub = stub(Duration.ZERO, seen);
+        var stub = stub(seen);
         try {
             var task = Probe.builder()
                 .endpoint(Property.ofValue("http://localhost:" + stub.getAddress().getPort()))
@@ -76,7 +76,7 @@ class VespaConnectionTest extends VespaContainer {
     @Test
     void noTokenNoAuthorization() throws Exception {
         var seen = new ArrayList<Seen>();
-        var stub = stub(Duration.ZERO, seen);
+        var stub = stub(seen);
         try {
             probe("http://localhost:" + stub.getAddress().getPort()).request(runContextFactory.of(), get("/search/"));
 
@@ -87,10 +87,67 @@ class VespaConnectionTest extends VespaContainer {
     }
 
     @Test
+    void blankTokenNoAuthorization() throws Exception {
+        var seen = new ArrayList<Seen>();
+        var stub = stub(seen);
+        try {
+            var task = Probe.builder()
+                .endpoint(Property.ofValue("http://localhost:" + stub.getAddress().getPort()))
+                .token(Property.ofExpression("{{ '' }}"))
+                .build();
+
+            task.request(runContextFactory.of(), get("/search/"));
+
+            assertThat(seen.getFirst().authorization(), is(nullValue()));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void builderCanBeReused() throws Exception {
+        var request = get("/search/?yql=" + encode("select * from music where true") + "&hits=0");
+        var task = probe(endpoint);
+
+        task.request(runContextFactory.of(), request);
+        var second = task.request(runContextFactory.of(), request);
+
+        assertThat(second.getStatus().getCode(), is(200));
+    }
+
+    @Test
+    void redirectIsRefusedAndKeepsTheToken() throws Exception {
+        var elsewhere = new ArrayList<Seen>();
+        var target = stub(elsewhere);
+        var redirecting = stub(Duration.ZERO, 302, "http://localhost:" + target.getAddress().getPort() + "/search/", new ArrayList<>());
+        try {
+            var task = Probe.builder()
+                .endpoint(Property.ofValue("http://localhost:" + redirecting.getAddress().getPort()))
+                .token(Property.ofValue("token"))
+                .build();
+
+            var e = assertThrows(Exception.class, () -> task.request(runContextFactory.of(), get("/search/")));
+
+            assertThat(e.getMessage(), containsString("response code '302'"));
+            assertThat(elsewhere, is(empty()));
+        } finally {
+            redirecting.stop(0);
+            target.stop(0);
+        }
+    }
+
+    @Test
+    void endpointWithoutScheme() {
+        var e = assertThrows(IllegalArgumentException.class, () -> probe("localhost:18080").request(runContextFactory.of(), get("/search/")));
+
+        assertThat(e.getMessage(), containsString("'localhost:18080'"));
+    }
+
+    @Test
     void failedRequestHasVespaError() {
         var e = assertThrows(Exception.class, () -> probe(endpoint).request(runContextFactory.of(), get("/search/?yql=" + encode("select from where"))));
 
-        assertThat(e.getMessage(), containsString("400"));
+        assertThat(e.getMessage(), containsString("response code '400'"));
         assertThat(e.getMessage(), containsString("Could not create query from YQL"));
     }
 
@@ -109,7 +166,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void readTimeout() throws Exception {
-        var stub = stub(Duration.ofSeconds(3), new ArrayList<>());
+        var stub = stub(Duration.ofSeconds(3), 200, null, new ArrayList<>());
         try {
             var task = Probe.builder()
                 .endpoint(Property.ofValue("http://localhost:" + stub.getAddress().getPort()))
@@ -155,8 +212,12 @@ class VespaConnectionTest extends VespaContainer {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    // For what the test container can't show: data-plane tokens are Vespa Cloud only, and a slow answer.
-    private static HttpServer stub(Duration delay, List<Seen> seen) throws Exception {
+    private static HttpServer stub(List<Seen> seen) throws Exception {
+        return stub(Duration.ZERO, 200, null, seen);
+    }
+
+    // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect.
+    private static HttpServer stub(Duration delay, int status, String location, List<Seen> seen) throws Exception {
         var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
             seen.add(new Seen(exchange.getRequestURI().getPath(), exchange.getRequestHeaders().get("Authorization")));
@@ -165,8 +226,11 @@ class VespaConnectionTest extends VespaContainer {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            if (location != null) {
+                exchange.getResponseHeaders().add("Location", location);
+            }
             var body = "{}".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, body.length);
+            exchange.sendResponseHeaders(status, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
         });
