@@ -147,7 +147,10 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
             .method("POST")
             .body(HttpRequest.JsonRequestBody.of(body(runContext)))
             .build();
-        var answer = request(runContext, request).getBody();
+        String answer;
+        try (var client = client(runContext)) {
+            answer = request(runContext, client, request).getBody();
+        }
         if (answer == null || answer.isBlank()) {
             throw new IllegalStateException("Vespa sent an empty answer to the query.");
         }

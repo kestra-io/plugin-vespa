@@ -33,7 +33,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetch() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
         var runContext = runContextFactory.of();
 
         var output = task.run(runContext);
@@ -49,7 +49,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetchOne() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
 
         var output = task.run(runContextFactory.of());
 
@@ -61,7 +61,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetchOneNoHit() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(NO_HIT)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(NO_HIT)).fetchType(Property.ofValue(FetchType.FETCH_ONE)).build();
 
         var output = task.run(runContextFactory.of());
 
@@ -72,7 +72,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void fetchNoHit() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(NO_HIT)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(NO_HIT)).build();
 
         var output = task.run(runContextFactory.of());
 
@@ -83,7 +83,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void none() throws Exception {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.NONE)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.NONE)).build();
 
         var output = task.run(runContextFactory.of());
 
@@ -97,7 +97,7 @@ class QueryTest extends VespaContainer {
     void hitsAndOffset() throws Exception {
         var yql = "select * from music where true order by year asc, added_at asc";
         var task = Query.builder()
-            .endpoint(Property.ofValue(endpoint))
+            .endpoint(Property.ofValue(endpoint()))
             .yql(Property.ofValue(yql))
             .hits(Property.ofValue(5))
             .offset(Property.ofValue(5))
@@ -115,7 +115,7 @@ class QueryTest extends VespaContainer {
     void userQueryRankingAndParameters() throws Exception {
         var yql = "select * from music where userQuery() or ({targetHits:3}nearestNeighbor(embedding, q))";
         var task = Query.builder()
-            .endpoint(Property.ofValue(endpoint))
+            .endpoint(Property.ofValue(endpoint()))
             .yql(Property.ofValue(yql))
             .query(Property.ofValue("blue"))
             .ranking(Property.ofValue("closeness"))
@@ -253,7 +253,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void invalidYql() {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint)).yql(Property.ofValue("select * frm music")).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue("select * frm music")).build();
 
         var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
 
@@ -370,7 +370,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void yqlRequired() {
-        var task = Query.builder().id("query").type(Query.class.getName()).endpoint(Property.ofValue(endpoint)).build();
+        var task = Query.builder().id("query").type(Query.class.getName()).endpoint(Property.ofValue(endpoint())).build();
 
         var violations = modelValidator.isValid(task);
 
