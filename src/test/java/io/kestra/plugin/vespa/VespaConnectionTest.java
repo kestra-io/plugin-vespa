@@ -1,6 +1,5 @@
 package io.kestra.plugin.vespa;
 
-import com.sun.net.httpserver.HttpServer;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.HttpResponse;
 import io.kestra.core.models.property.Property;
@@ -11,15 +10,12 @@ import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -39,7 +35,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void endpointWithTrailingSlash() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             send(probe(stub.endpoint() + "//"), get("/search/"));
 
             assertThat(stub.seen().getFirst().path(), is("/search/"));
@@ -48,7 +44,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void bearerToken() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             var task = Probe.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .token(Property.ofExpression("{{ 'tok' ~ 'en' }}"))
@@ -62,7 +58,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void noTokenNoAuthorization() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             send(probe(stub.endpoint()), get("/search/"));
 
             assertThat(stub.seen().getFirst().authorization(), is(nullValue()));
@@ -71,7 +67,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void blankTokenNoAuthorization() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             var task = Probe.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .token(Property.ofExpression("{{ '' }}"))
@@ -85,7 +81,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void redirectIsRefusedAndKeepsTheToken() throws Exception {
-        try (var target = Stub.start(); var redirecting = Stub.start(Duration.ZERO, 302, target.endpoint() + "/search/")) {
+        try (var target = VespaStub.start(); var redirecting = VespaStub.start(Duration.ZERO, 302, target.endpoint() + "/search/")) {
             var task = Probe.builder()
                 .endpoint(Property.ofValue(redirecting.endpoint()))
                 .token(Property.ofValue("token"))
@@ -100,7 +96,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void requestsShareOneConnection() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             var task = probe(stub.endpoint());
             var runContext = runContextFactory.of();
 
@@ -125,7 +121,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void requestKeepsMethodHeadersAndBody() throws Exception {
-        try (var stub = Stub.start()) {
+        try (var stub = VespaStub.start()) {
             var request = HttpRequest.builder()
                 .uri(URI.create("/document/v1/music/music/docid/1"))
                 .method("POST")
@@ -144,7 +140,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void readTimeout() throws Exception {
-        try (var stub = Stub.start(Duration.ofSeconds(2), 200, null)) {
+        try (var stub = VespaStub.start(Duration.ofSeconds(2), 200, null)) {
             var task = Probe.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .readTimeout(Property.ofValue(Duration.ofMillis(500)))
@@ -192,54 +188,6 @@ class VespaConnectionTest extends VespaContainer {
 
     private static String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
-
-    // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect.
-    private record Stub(HttpServer server, List<Seen> seen) implements AutoCloseable {
-        static Stub start() throws IOException {
-            return start(Duration.ZERO, 200, null);
-        }
-
-        static Stub start(Duration delay, int status, String location) throws IOException {
-            var seen = new CopyOnWriteArrayList<Seen>();
-            var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
-            server.createContext("/", exchange -> {
-                seen.add(new Seen(
-                    exchange.getRemoteAddress().getPort(),
-                    exchange.getRequestMethod(),
-                    exchange.getRequestURI().getPath(),
-                    exchange.getRequestHeaders().get("Authorization"),
-                    exchange.getRequestHeaders().getFirst("X-Probe"),
-                    new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)
-                ));
-                try {
-                    Thread.sleep(delay);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                if (location != null) {
-                    exchange.getResponseHeaders().add("Location", location);
-                }
-                var body = "{}".getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(status, body.length);
-                exchange.getResponseBody().write(body);
-                exchange.close();
-            });
-            server.start();
-            return new Stub(server, seen);
-        }
-
-        String endpoint() {
-            return "http://localhost:" + server.getAddress().getPort();
-        }
-
-        @Override
-        public void close() {
-            server.stop(0);
-        }
-    }
-
-    private record Seen(int clientPort, String method, String path, List<String> authorization, String probeHeader, String body) {
     }
 
     @SuperBuilder

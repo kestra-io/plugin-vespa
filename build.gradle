@@ -87,6 +87,7 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter-engine"
     testImplementation "org.hamcrest:hamcrest"
     testImplementation "org.hamcrest:hamcrest-library"
+    testImplementation "ch.qos.logback:logback-classic"
 
     testImplementation 'org.testcontainers:testcontainers:2.0.5'
 }
