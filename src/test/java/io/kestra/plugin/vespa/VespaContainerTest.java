@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.DoubleNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.github.dockerjava.api.model.ExposedPort;
+import com.github.dockerjava.api.model.Ports;
 import io.kestra.core.serializers.JacksonMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -32,8 +35,15 @@ class VespaContainerTest extends VespaContainer {
     void queryApiAnswersOnEndpoint() throws Exception {
         var response = get(endpoint() + "/status.html");
 
-        assertThat(URI.create(endpoint()).getPort(), is(VESPA.getMappedPort(8080)));
         assertThat(response.statusCode(), is(200));
+    }
+
+    @Test
+    void noFixedHostPort() {
+        var bindings = VESPA.getContainerInfo().getHostConfig().getPortBindings().getBindings();
+
+        assertThat(bindings.keySet(), containsInAnyOrder(ExposedPort.tcp(8080), ExposedPort.tcp(19071)));
+        assertThat(bindings.values().stream().flatMap(Arrays::stream).map(Ports.Binding::getHostPortSpec).toList(), everyItem(is(emptyOrNullString())));
     }
 
     @Test
