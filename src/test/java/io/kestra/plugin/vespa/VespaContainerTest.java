@@ -46,6 +46,15 @@ class VespaContainerTest extends VespaContainer {
     }
 
     @Test
+    void catalogAddedAtIsOneDayApart() throws Exception {
+        var addedAt = catalog().stream().map(d -> d.path("fields").path("added_at").asLong()).toList();
+
+        for (int i = 1; i < addedAt.size(); i++) {
+            assertThat("line " + (i + 1), addedAt.get(i) - addedAt.get(i - 1), is(Duration.ofDays(1).toMillis()));
+        }
+    }
+
+    @Test
     void everyCatalogDocumentRoundTrips() throws Exception {
         var catalog = catalog();
 
