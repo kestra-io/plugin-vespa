@@ -1,5 +1,3 @@
-vespa-endpoint: http://localhost:18080
-
 kestra:
   repository:
     type: memory

@@ -1,14 +1,10 @@
 package io.kestra.plugin.vespa;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.dockerjava.api.model.ExposedPort;
-import com.github.dockerjava.api.model.PortBinding;
-import com.github.dockerjava.api.model.Ports;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.runners.RunContextFactory;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.Rethrow;
-import io.micronaut.context.annotation.Value;
 import jakarta.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import org.testcontainers.containers.GenericContainer;
@@ -29,7 +25,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -41,21 +36,14 @@ import java.util.zip.ZipOutputStream;
 public class VespaContainer {
     private static final HttpClient HTTP = HttpClient.newHttpClient();
     private static final ObjectMapper MAPPER = JacksonMapper.ofJson();
-    private static final GenericContainer<?> VESPA;
+    static final GenericContainer<?> VESPA;
 
     static {
         VESPA = new GenericContainer<>(DockerImageName.parse("vespaengine/vespa:8.781.11"))
             .withExposedPorts(8080, 19071)
             // the image refuses to start under 4 GB of free memory, far more than the test data needs
             .withEnv("VESPA_IGNORE_NOT_ENOUGH_MEMORY", "true")
-            .withCreateContainerCmdModifier(cmd -> cmd
-                .withHostName("vespa-container")
-                .getHostConfig()
-                .withPortBindings(List.of(
-                    new PortBinding(Ports.Binding.bindPort(18080), new ExposedPort(8080)),
-                    new PortBinding(Ports.Binding.empty(), new ExposedPort(19071))
-                ))
-            )
+            .withCreateContainerCmdModifier(cmd -> cmd.withHostName("vespa-container"))
             .waitingFor(Wait.forHttp("/state/v1/health").forPort(19071).withStartupTimeout(Duration.ofSeconds(180)));
 
         VESPA.start();
@@ -68,8 +56,9 @@ public class VespaContainer {
     @Inject
     protected RunContextFactory runContextFactory;
 
-    @Value("${vespa-endpoint}")
-    protected String endpoint;
+    protected static String endpoint() {
+        return url(8080);
+    }
 
     static void deploy(Path applicationDir) {
         var configServer = url(19071);

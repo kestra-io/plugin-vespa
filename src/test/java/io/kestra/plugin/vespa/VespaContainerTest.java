@@ -30,9 +30,9 @@ class VespaContainerTest extends VespaContainer {
 
     @Test
     void queryApiAnswersOnEndpoint() throws Exception {
-        var response = get(endpoint + "/status.html");
+        var response = get(endpoint() + "/status.html");
 
-        assertThat(endpoint, is("http://localhost:18080"));
+        assertThat(URI.create(endpoint()).getPort(), is(VESPA.getMappedPort(8080)));
         assertThat(response.statusCode(), is(200));
     }
 
@@ -40,7 +40,7 @@ class VespaContainerTest extends VespaContainer {
     void catalogIsFullyIndexed() throws Exception {
         var yql = URLEncoder.encode("select * from music where true", StandardCharsets.UTF_8);
 
-        var root = json(get(endpoint + "/search/?hits=0&yql=" + yql)).path("root");
+        var root = json(get(endpoint() + "/search/?hits=0&yql=" + yql)).path("root");
 
         assertThat(root.path("fields").path("totalCount").asLong(), is((long) catalog().size()));
     }
@@ -51,7 +51,7 @@ class VespaContainerTest extends VespaContainer {
 
         for (JsonNode expected : catalog) {
             var localId = expected.path("put").asText().split("::", 2)[1];
-            var url = endpoint + "/document/v1/mynamespace/music/docid/" + URLEncoder.encode(localId, StandardCharsets.UTF_8) + "?format.tensors=short-value";
+            var url = endpoint() + "/document/v1/mynamespace/music/docid/" + URLEncoder.encode(localId, StandardCharsets.UTF_8) + "?format.tensors=short-value";
 
             var actual = json(get(url));
 
@@ -102,13 +102,13 @@ class VespaContainerTest extends VespaContainer {
 
             assertThat(e.getMessage(), containsString(line));
         }
-        assertThat(get(endpoint + "/document/v1/mynamespace/music/docid/numbered").statusCode(), is(404));
+        assertThat(get(endpoint() + "/document/v1/mynamespace/music/docid/numbered").statusCode(), is(404));
     }
 
     @Test
     void awaitTimeoutNamesLastAnswer() {
         var e = assertThrows(IllegalStateException.class,
-            () -> await("a missing page", Duration.ofSeconds(1), answers(endpoint + "/no-such-path", r -> r.statusCode() == 200)));
+            () -> await("a missing page", Duration.ofSeconds(1), answers(endpoint() + "/no-such-path", r -> r.statusCode() == 200)));
 
         assertThat(e.getMessage(), allOf(containsString("a missing page"), containsString("last answer: 404")));
     }
