@@ -109,6 +109,7 @@ class VespaConnectionTest extends VespaContainer {
                 task.request(runContext, client, get("/search/"));
             }
 
+            assertThat(stub.seen(), hasSize(2));
             assertThat(stub.seen().getLast().clientPort(), is(stub.seen().getFirst().clientPort()));
         }
     }
