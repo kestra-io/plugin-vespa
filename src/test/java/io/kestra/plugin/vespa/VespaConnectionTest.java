@@ -31,7 +31,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void request() throws Exception {
-        var response = send(probe(endpoint), get("/search/?yql=" + encode("select * from music where true") + "&hits=0"));
+        var response = send(probe(endpoint()), get("/search/?yql=" + encode("select * from music where true") + "&hits=0"));
 
         assertThat(response.getStatus().getCode(), is(200));
         assertThat(JacksonMapper.ofJson().readTree(response.getBody()).at("/root/fields/totalCount").asLong(), greaterThan(0L));
@@ -160,7 +160,7 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void tokenNotInToString() {
-        var task = Probe.builder().endpoint(Property.ofValue(endpoint)).token(Property.ofValue("s3cr3t-token")).build();
+        var task = Probe.builder().endpoint(Property.ofValue(endpoint())).token(Property.ofValue("s3cr3t-token")).build();
 
         assertThat(task.toString(), not(containsString("s3cr3t-token")));
     }
