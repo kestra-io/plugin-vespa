@@ -4,7 +4,6 @@ namespace: sanitychecks.plugin-vespa
 inputs:
   - id: endpoint
     type: STRING
-    defaults: "http://localhost:18080"
 
 tasks:
   - id: jazz
@@ -27,5 +26,5 @@ tasks:
     conditions:
       - "{{ outputs.jazz.size == 3 }}"
       - "{{ outputs.jazz.totalCount == 6 }}"
-      - "{{ outputs.jazz.rows[0].album == 'Time Out' }}"
-      - "{{ outputs.nearest.row.genre == 'jazz' }}"
+      - "{{ outputs.jazz.rows[0].fields.album == 'Kind of Blue' }}"
+      - "{{ outputs.nearest.row.fields.genre == 'jazz' }}"

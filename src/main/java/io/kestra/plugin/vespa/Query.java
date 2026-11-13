@@ -15,6 +15,7 @@ import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
@@ -22,12 +23,12 @@ import lombok.experimental.SuperBuilder;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 @SuperBuilder
 @ToString
@@ -36,11 +37,14 @@ import java.util.Set;
 @NoArgsConstructor
 @Schema(
     title = "Query Vespa with YQL",
-    description = "Runs one YQL query on the Vespa query API and returns the hits of that one answer as rows: each row holds the hit's `id` and `relevance` beside its summary fields. Default `fetchType=FETCH`. Vespa caps one answer at 400 hits and the offset at 1000."
+    description = """
+        Runs one YQL query on the Vespa query API and returns the hits of that one answer as rows, in Vespa's own hit \
+        shape: `id`, `relevance` and the document's summary fields under `fields`, read like `rows[0].fields.album`. \
+        Default `fetchType=FETCH`."""
 )
 @Plugin(
     metrics = {
-        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of hits in Vespa's answer")
+        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of rows given in the outputs")
     },
     examples = {
         @Example(
@@ -66,7 +70,7 @@ import java.util.Set;
 
                   - id: log_hits
                     type: io.kestra.plugin.core.log.Log
-                    message: "{{ outputs.search.size }} of {{ outputs.search.totalCount }} albums, first: {{ outputs.search.rows[0].album }}"
+                    message: "{{ outputs.search.size }} of {{ outputs.search.totalCount }} albums, first: {{ outputs.search.rows[0].fields.album }}"
                 """
         ),
         @Example(
@@ -89,7 +93,7 @@ import java.util.Set;
 
                   - id: log_closest
                     type: io.kestra.plugin.core.log.Log
-                    message: "Closest album: {{ outputs.nearest.row.album }}"
+                    message: "Closest album: {{ outputs.nearest.row.fields.album }}"
                 """
         )
     }
@@ -104,15 +108,24 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @PluginProperty(group = "main")
     private Property<String> query;
 
-    @Schema(title = "Number of hits to return", description = "Vespa's default is 10 and its limit 400.")
+    @Schema(
+        title = "Number of hits to return in one answer",
+        description = """
+            Unset, Vespa returns 10 hits with `fetchType=FETCH`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
+            Vespa refuses more than 400 unless the application raises `maxHits` in its query profile."""
+    )
     @PluginProperty(group = "main")
-    private Property<Integer> hits;
+    private Property<@Min(0) Integer> hits;
 
-    @Schema(title = "Number of hits to skip", description = "Vespa's limit is 1000.")
+    @Schema(
+        title = "Number of hits to skip",
+        description = """
+            Default 0. Vespa refuses more than 1000 unless the application raises `maxOffset` in its query profile."""
+    )
     @PluginProperty(group = "main")
-    private Property<Integer> offset;
+    private Property<@Min(0) Integer> offset;
 
-    @Schema(title = "Rank profile to rank the hits with")
+    @Schema(title = "Rank profile to rank the hits with", description = "Sent as `ranking.profile`.")
     @PluginProperty(group = "main")
     private Property<String> ranking;
 
@@ -122,14 +135,20 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
 
     @Schema(
         title = "Other query API parameters",
-        description = "Sent as they are, like `input.query(q)` for a query tensor or `presentation.format.tensors: short-value`. A parameter also set by a property of this task, by name or by Vespa's alias (`count`, `start`, `ranking.profile`, `model.queryString`), fails the task."
+        description = """
+            Sent as they are, flat or nested, like `input.query(q)` for a query tensor, \
+            `presentation.format.tensors: short-value` or `ranking: {matchPhase: {maxHits: 100}}`. A parameter also set \
+            by a property of this task, by name or by Vespa's alias (`count`, `start`, `ranking.profile`, \
+            `model.queryString`), in any case and flat or nested, fails the task."""
     )
     @PluginProperty(group = "advanced")
     private Property<Map<String, Object>> parameters;
 
     @Schema(
         title = "Result handling mode",
-        description = "`FETCH` returns all hits as `rows`, `FETCH_ONE` the first hit as `row`, `NONE` only `totalCount`. `STORE` is not supported yet."
+        description = """
+            `FETCH` returns the hits of one answer as `rows` (as many as `hits`, Vespa's default 10), `FETCH_ONE` the \
+            first hit as `row`, `NONE` only `totalCount`. `STORE` is not supported yet."""
     )
     @Builder.Default
     @PluginProperty(group = "processing")
@@ -137,7 +156,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
 
     @Override
     public Output run(RunContext runContext) throws Exception {
-        var rFetchType = runContext.render(fetchType).as(FetchType.class).orElseThrow();
+        var rFetchType = runContext.render(fetchType).as(FetchType.class).orElse(FetchType.FETCH);
         if (rFetchType == FetchType.STORE) {
             throw new IllegalArgumentException("Query doesn't support fetchType STORE yet; use FETCH, FETCH_ONE or NONE.");
         }
@@ -145,7 +164,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         var request = HttpRequest.builder()
             .uri(URI.create("/search/"))
             .method("POST")
-            .body(HttpRequest.JsonRequestBody.of(body(runContext)))
+            .body(HttpRequest.JsonRequestBody.of(body(runContext, rFetchType)))
             .build();
         String answer;
         try (var client = client(runContext)) {
@@ -159,15 +178,15 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         // degraded coverage (like a soft timeout) still returns usable hits, so Vespa's errors are shown, not thrown
         root.path("errors").forEach(error -> runContext.logger().warn("Vespa answered with an error: {}: {}", error.path("summary").asText(), error.path("message").asText()));
 
-        var rows = rows(runContext, root);
-        runContext.metric(Counter.of("records", rows.size()));
-
+        var rows = rows(root);
         var output = Output.builder().totalCount(root.at("/fields/totalCount").asLong());
-        return switch (rFetchType) {
+        var built = switch (rFetchType) {
             case FETCH -> output.rows(rows).size(rows.size()).build();
             case FETCH_ONE -> output.row(rows.isEmpty() ? null : rows.getFirst()).size(Math.min(rows.size(), 1)).build();
             default -> output.build();
         };
+        runContext.metric(Counter.of("records", built.getSize() == null ? 0 : built.getSize()));
+        return built;
     }
 
     private static JsonNode root(String answer) {
@@ -183,47 +202,59 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         return json.get("root");
     }
 
-    private Map<String, Object> body(RunContext runContext) throws Exception {
-        var body = new HashMap<String, Object>();
-        body.put("yql", runContext.render(yql).as(String.class).orElseThrow());
+    private Map<String, Object> body(RunContext runContext, FetchType rFetchType) throws Exception {
+        var body = new LinkedHashMap<String, Object>();
+        body.put("yql", runContext.render(yql).as(String.class).orElseThrow(() -> new IllegalArgumentException("The task property 'yql' is required; set a YQL query.")));
         runContext.render(query).as(String.class).ifPresent(v -> body.put("query", v));
         runContext.render(hits).as(Integer.class).ifPresent(v -> body.put("hits", v));
         runContext.render(offset).as(Integer.class).ifPresent(v -> body.put("offset", v));
-        runContext.render(ranking).as(String.class).ifPresent(v -> body.put("ranking", v));
+        runContext.render(ranking).as(String.class).ifPresent(v -> body.put("ranking.profile", v));
         runContext.render(queryTimeout).as(Duration.class).ifPresent(v -> body.put("timeout", v.toMillis() + "ms"));
 
-        var setByProperties = Set.copyOf(body.keySet());
-        var aliases = Map.of("count", "hits", "start", "offset", "ranking.profile", "ranking", "model.querystring", "query");
-        for (var parameter : runContext.render(parameters).asMap(String.class, Object.class).entrySet()) {
-            // Vespa reads query parameter names in any case
-            var name = parameter.getKey().toLowerCase(Locale.ROOT);
-            var property = aliases.getOrDefault(name, name);
-            if (setByProperties.contains(property)) {
-                throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(parameter.getKey(), property));
+        // Vespa's names and aliases for what the task properties set, lower-cased since Vespa reads names in any case
+        var properties = Map.of(
+            "yql", "yql", "query", "query", "model.querystring", "query", "hits", "hits", "count", "hits",
+            "offset", "offset", "start", "offset", "ranking", "ranking", "ranking.profile", "ranking", "timeout", "queryTimeout"
+        );
+        var setByProperties = Set.copyOf(body.keySet().stream().map(properties::get).toList());
+
+        var rParameters = runContext.render(parameters).asMap(String.class, Object.class);
+        var parameterHits = false;
+        for (var name : dottedNames("", rParameters).toList()) {
+            var property = properties.get(name.toLowerCase(Locale.ROOT));
+            if (property != null && setByProperties.contains(property)) {
+                throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(name, property));
             }
-            body.put(parameter.getKey(), parameter.getValue());
+            parameterHits |= "hits".equals(property);
+        }
+        body.putAll(rParameters);
+
+        // no summaries built for hits the outputs would throw away
+        if (!body.containsKey("hits") && !parameterHits && rFetchType != FetchType.FETCH) {
+            body.put("hits", rFetchType == FetchType.FETCH_ONE ? 1 : 0);
         }
         return body;
     }
 
-    private static List<Map<String, Object>> rows(RunContext runContext, JsonNode root) {
+    // nested maps are read as dotted names, so `model: {queryString: x}` is checked like `model.queryString`
+    private static Stream<String> dottedNames(String prefix, Map<?, ?> parameters) {
+        return parameters.entrySet().stream().flatMap(entry -> entry.getValue() instanceof Map<?, ?> nested
+            ? dottedNames(prefix + entry.getKey() + ".", nested)
+            : Stream.of(prefix + entry.getKey()));
+    }
+
+    private static List<Map<String, Object>> rows(JsonNode root) {
         var rows = new ArrayList<Map<String, Object>>();
         for (var hit : root.path("children")) {
-            var fields = hit.path("fields").isObject()
-                ? JacksonMapper.ofJson().convertValue(hit.get("fields"), new TypeReference<LinkedHashMap<String, Object>>() {})
-                : new LinkedHashMap<String, Object>();
-            fields.remove("sddocname");
-            fields.remove("documentid");
-            var clashes = fields.keySet().stream().filter(name -> name.equals("id") || name.equals("relevance")).toList();
-            if (!clashes.isEmpty()) {
-                runContext.logger().warn("Dropped the document fields {} of hit {}: Vespa's own id and relevance keep those names.", clashes, hit.path("id").asText());
-                clashes.forEach(fields::remove);
-            }
-
             var row = new LinkedHashMap<String, Object>();
             row.put("id", hit.path("id").asText());
             row.put("relevance", hit.path("relevance").asDouble());
-            row.putAll(fields);
+            if (hit.path("fields").isObject()) {
+                var fields = JacksonMapper.ofJson().convertValue(hit.get("fields"), new TypeReference<LinkedHashMap<String, Object>>() {});
+                fields.remove("sddocname");
+                fields.remove("documentid");
+                row.put("fields", fields);
+            }
             rows.add(row);
         }
         return rows;
@@ -232,7 +263,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "Hits as rows", description = "Only with `fetchType=FETCH`.")
+        @Schema(title = "Hits as rows", description = "Only with `fetchType=FETCH`. Each row holds `id`, `relevance` and the document under `fields`.")
         private List<Map<String, Object>> rows;
 
         @Schema(title = "First hit as a row", description = "Only with `fetchType=FETCH_ONE`; null when nothing matched.")

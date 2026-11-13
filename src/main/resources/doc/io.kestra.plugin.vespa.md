@@ -1,16 +1,22 @@
-This is the Kestra plugin template. Use it as a starting point for building a new plugin.
+# How to use the Vespa plugin
 
-## What this template ships
+Query a [Vespa](https://docs.vespa.ai/) application from Kestra flows with YQL: text, vector and hybrid search.
 
-- `Example` is a sample `RunnableTask` that reverses an input string.
-- `Trigger` is a sample polling trigger that fires an execution at random.
+## Authentication
 
-## How to build your plugin
+Set `endpoint` to the base URL of the Vespa container cluster, like `http://localhost:8080` or a Vespa Cloud endpoint.
+For Vespa Cloud, set `token` to a data-plane token, sent as a bearer token; leave it unset for a self-hosted Vespa
+without authentication. Store the token in a [secret](https://kestra.io/docs/concepts/secret), and set the connection
+once for every task with [plugin defaults](https://kestra.io/docs/workflow-components/plugin-defaults).
 
-1. Rename the package `io.kestra.plugin.vespa` to your own, for example `io.kestra.plugin.myservice`.
-2. Update `group`, `name`, `title`, and `description` in `src/main/resources/metadata/index.yaml`.
-3. Replace `src/main/resources/icons/plugin-icon.svg` with your service's icon.
-4. Replace the `Example` and `Trigger` classes with your real tasks and triggers.
-5. Replace this how-to with documentation for your plugin.
+## Tasks
 
-Run `./gradlew lintPluginDocs` before pushing to validate the plugin documentation.
+`Query` runs one YQL query (`yql`) on Vespa's [query API](https://docs.vespa.ai/en/reference/query-api-reference.html)
+and returns the hits of that one answer. Optional: `query` (text for `userQuery()`), `hits`, `offset`, `ranking` (rank
+profile), `queryTimeout` (Vespa's own time limit) and `parameters` for any other query API parameter, like a query
+tensor `input.query(q)`. A parameter that a task property also sets fails the task, so each value has one place.
+
+Rows keep Vespa's hit shape: `id`, `relevance` and the document under `fields`, read like
+`{{ outputs.search.rows[0].fields.album }}`. `fetchType` picks `FETCH` (rows, default), `FETCH_ONE` (first row) or
+`NONE` (only `totalCount`). Vespa returns 10 hits by default and refuses more than 400 hits or an offset over 1000
+unless the application raises its limits.
