@@ -15,7 +15,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import org.apache.commons.lang3.StringUtils;
 
-import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.stream.IntStream;
@@ -48,17 +47,9 @@ public interface VespaConnectionInterface {
     Property<Duration> getReadTimeout();
 
     /**
-     * Sends a request whose URI is a path and query relative to the endpoint; any answer other than 2xx throws with its status and body.
+     * Builds the client a run sends all its requests through, so connections are reused; the caller closes it before the run ends.
      */
-    default HttpResponse<String> request(RunContext runContext, HttpRequest request)
-        throws IllegalVariableEvaluationException, IOException, HttpClientException {
-        var httpRequest = HttpRequest.builder()
-            .method(request.getMethod())
-            .uri(URI.create(endpoint(runContext) + request.getUri()))
-            .headers(request.getHeaders())
-            .body(request.getBody())
-            .build();
-
+    default HttpClient client(RunContext runContext) throws IllegalVariableEvaluationException {
         var timeout = TimeoutConfiguration.builder().connectTimeout(getConnectTimeout());
         if (getReadTimeout() != null) {
             timeout.readIdleTimeout(getReadTimeout());
@@ -72,10 +63,22 @@ public interface VespaConnectionInterface {
         if (!rToken.isBlank()) {
             configuration.auth(BearerAuthConfiguration.builder().token(Property.ofValue(rToken)).build());
         }
+        return new HttpClient(runContext, configuration.build());
+    }
 
-        try (var client = new HttpClient(runContext, configuration.build())) {
-            return client.request(httpRequest, String.class);
-        }
+    /**
+     * Sends a request whose URI is a path and query relative to the endpoint; any answer other than 2xx throws with its status and body.
+     */
+    default HttpResponse<String> request(RunContext runContext, HttpClient client, HttpRequest request)
+        throws IllegalVariableEvaluationException, HttpClientException {
+        var httpRequest = HttpRequest.builder()
+            .method(request.getMethod())
+            .uri(URI.create(endpoint(runContext) + request.getUri()))
+            .headers(request.getHeaders())
+            .body(request.getBody())
+            .build();
+
+        return client.request(httpRequest, String.class);
     }
 
     private String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
