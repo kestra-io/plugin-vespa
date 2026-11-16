@@ -74,7 +74,7 @@ import java.util.stream.Stream;
     }
 )
 public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
-    // namespace, document type, an optional number or group, then the key, which may hold any character, `:` included
+    // namespace, document type, an optional number or group, then the key, which may hold `:`
     private static final Pattern DOCUMENT_ID = Pattern.compile("id:([^:]+):([^:]+):(?:n=(\\d+)|g=([^:]+))?:(.+)");
 
     @Schema(
@@ -120,7 +120,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
             .build();
     }
 
-    // a part that is only dots would reach the server as a path step, and Vespa refuses it even encoded
+    // a part that is exactly `.` or `..` would reach the server as a path step, and Vespa refuses it even encoded
     private static String path(String documentId) {
         var parts = DOCUMENT_ID.matcher(documentId);
         if (!parts.matches() || Stream.of(parts.group(1), parts.group(2), parts.group(4), parts.group(5)).anyMatch(part -> ".".equals(part) || "..".equals(part))) {

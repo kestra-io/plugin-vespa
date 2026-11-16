@@ -116,7 +116,7 @@ class GetTest extends VespaContainer {
             "id:mynamespace:music::..",
             "id:.:music::x",
             "id:..:music::x",
-            "id:mynamespace:.:x:y",
+            "id:mynamespace:.::x",
             "id:mynamespace:..::x",
             "id:mynamespace:music:g=.:x",
             "id:mynamespace:music:g=..:x"
