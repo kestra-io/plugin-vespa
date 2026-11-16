@@ -25,7 +25,7 @@ class RunnerTest extends VespaContainer {
     void query() throws Exception {
         var execution = runnerUtils.runOne(MAIN_TENANT, "sanitychecks.plugin-vespa", "query", null, (flow, e) -> Map.of("endpoint", endpoint()));
 
-        assertThat(execution.getTaskRunList(), hasSize(3));
+        assertThat(execution.getTaskRunList(), hasSize(4));
         assertThat(execution.getState().getCurrent(), is(State.Type.SUCCESS));
     }
 }

@@ -13,6 +13,7 @@ import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
@@ -20,7 +21,11 @@ import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 import org.apache.commons.lang3.StringUtils;
+import reactor.core.publisher.Flux;
 
+import java.io.BufferedOutputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -120,7 +125,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Schema(
         title = "Number of hits to return in one answer",
         description = """
-            Unset, Vespa returns 10 hits with `fetchType=FETCH`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
+            Unset, Vespa returns 10 hits with `fetchType=FETCH` or `STORE`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
             Vespa refuses more than 400 unless the application raises `maxHits` in its query profile."""
     )
     @PluginProperty(group = "main")
@@ -165,7 +170,8 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         title = "Result handling mode",
         description = """
             `FETCH` returns the hits of one answer as `rows` (as many as `hits`, Vespa's default 10), `FETCH_ONE` the \
-            first hit as `row`, `NONE` only `totalCount`. `STORE` is not supported yet."""
+            first hit as `row`, `STORE` writes the hits of one answer to an ION file in Kestra's internal storage and \
+            returns its `uri`, `NONE` only `totalCount`."""
     )
     @Builder.Default
     @PluginProperty(group = "processing")
@@ -174,9 +180,6 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Override
     public Output run(RunContext runContext) throws Exception {
         var rFetchType = runContext.render(fetchType).as(FetchType.class).orElse(FetchType.FETCH);
-        if (rFetchType == FetchType.STORE) {
-            throw new IllegalArgumentException("Query doesn't support fetchType STORE yet; use FETCH, FETCH_ONE or NONE.");
-        }
 
         var request = HttpRequest.builder()
             .uri(URI.create("/search/"))
@@ -200,10 +203,20 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         var built = switch (rFetchType) {
             case FETCH -> output.rows(rows).size(rows.size()).build();
             case FETCH_ONE -> output.row(rows.isEmpty() ? null : rows.getFirst()).size(Math.min(rows.size(), 1)).build();
+            case STORE -> output.uri(store(runContext, rows)).size(rows.size()).build();
             default -> output.build();
         };
         runContext.metric(Counter.of("records", built.getSize() == null ? 0 : built.getSize()));
         return built;
+    }
+
+    private static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
+        var file = runContext.workingDir().createTempFile(".ion").toFile();
+        // one stream, not FileSerde.write per row: on Kestra 2.0 each write is a whole binary ION document (kestra-io/kestra#22557)
+        try (var output = new BufferedOutputStream(new FileOutputStream(file), FileSerde.BUFFER_SIZE)) {
+            FileSerde.writeAll(output, Flux.fromIterable(rows)).block();
+        }
+        return runContext.storage().putFile(file);
     }
 
     private static JsonNode root(String answer) {
@@ -247,7 +260,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         body.putAll(rParameters);
 
         // no summaries built for hits the outputs would throw away
-        if (!body.containsKey("hits") && !parameterHits && rFetchType != FetchType.FETCH) {
+        if (!body.containsKey("hits") && !parameterHits && (rFetchType == FetchType.FETCH_ONE || rFetchType == FetchType.NONE)) {
             body.put("hits", rFetchType == FetchType.FETCH_ONE ? 1 : 0);
         }
         return body;
@@ -295,7 +308,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         private Map<String, Object> row;
 
         @Schema(
-            title = "Number of rows in the outputs",
+            title = "Number of rows in the outputs or in the stored file",
             description = """
                 Null with `fetchType=NONE`."""
         )
@@ -307,5 +320,13 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
                 Vespa's `totalCount`, which can be larger than the hits returned."""
         )
         private Long totalCount;
+
+        @Schema(
+            title = "URI of the file with the hits",
+            description = """
+                Only with `fetchType=STORE`: an ION file in Kestra's internal storage, one record per hit, each with `id`, \
+                `relevance` and the document under `fields`."""
+        )
+        private URI uri;
     }
 }

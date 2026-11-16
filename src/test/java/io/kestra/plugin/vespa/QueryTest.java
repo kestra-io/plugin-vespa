@@ -10,10 +10,12 @@ import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -385,14 +387,99 @@ class QueryTest extends VespaContainer {
     }
 
     @Test
-    void storeNotSupported() throws Exception {
-        try (var stub = VespaStub.start()) {
+    void store() throws Exception {
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(output.getUri().getScheme(), is("kestra"));
+        assertThat(stored(runContext, output), is(rowsOf(search(Map.of("yql", CONTAINS_JAZZ_QUERY)))));
+        assertThat(output.getSize(), is(6));
+        assertThat(output.getTotalCount(), is(6L));
+        assertThat(output.getRows(), is(nullValue()));
+        assertThat(output.getRow(), is(nullValue()));
+    }
+
+    @Test
+    void storeNoHit() throws Exception {
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(NO_HIT)).fetchType(Property.ofValue(FetchType.STORE)).build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(output.getUri(), is(notNullValue()));
+        assertThat(stored(runContext, output), is(empty()));
+        assertThat(output.getSize(), is(0));
+        assertThat(output.getTotalCount(), is(0L));
+    }
+
+    @Test
+    void storeDefaultHits() throws Exception {
+        var yql = "select * from music where true";
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(yql)).fetchType(Property.ofValue(FetchType.STORE)).build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(stored(runContext, output), hasSize(10));
+        assertThat(output.getSize(), is(10));
+        assertThat(output.getTotalCount(), is(search(Map.of("yql", yql)).at("/root/fields/totalCount").asLong()));
+    }
+
+    @Test
+    void storeHitsAndOffset() throws Exception {
+        var yql = "select * from music where true order by year asc, added_at asc";
+        var task = Query.builder()
+            .endpoint(Property.ofValue(endpoint()))
+            .yql(Property.ofValue(yql))
+            .hits(Property.ofValue(3))
+            .offset(Property.ofValue(3))
+            .fetchType(Property.ofValue(FetchType.STORE))
+            .build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(stored(runContext, output), is(rowsOf(search(Map.of("yql", yql, "hits", 3, "offset", 3)))));
+        assertThat(output.getSize(), is(3));
+    }
+
+    @Test
+    void storeOneRequest() throws Exception {
+        try (var stub = VespaStub.answering("""
+            {"root": {
+              "fields": {"totalCount": 1000000},
+              "children": [
+                {"id": "id:mynamespace:music::kind-of-blue", "relevance": 0.9, "fields": {"album": "Kind of Blue"}},
+                {"id": "id:mynamespace:music::time-out", "relevance": 0.8, "fields": {"album": "Time Out"}}
+              ]
+            }}""")) {
             var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
+            var runContext = runContextFactory.of();
 
-            var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()));
+            var output = task.run(runContext);
 
-            assertThat(e.getMessage(), allOf(containsString("STORE"), containsString("FETCH"), containsString("FETCH_ONE"), containsString("NONE")));
-            assertThat(stub.seen(), is(empty()));
+            assertThat(stub.seen(), hasSize(1));
+            assertThat(stored(runContext, output), is(List.of(
+                Map.of("id", "id:mynamespace:music::kind-of-blue", "relevance", 0.9, "fields", Map.of("album", "Kind of Blue")),
+                Map.of("id", "id:mynamespace:music::time-out", "relevance", 0.8, "fields", Map.of("album", "Time Out"))
+            )));
+            assertThat(output.getSize(), is(2));
+            assertThat(output.getTotalCount(), is(1000000L));
+        }
+    }
+
+    @Test
+    void storeFailsOnBadAnswers() throws Exception {
+        for (var answer : List.of("", "<html>Bad gateway</html>", "{}")) {
+            try (var stub = VespaStub.answering(answer)) {
+                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
+
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answer + "'");
+
+                assertThat(answer, e.getMessage(), containsString("endpoint"));
+            }
         }
     }
 
@@ -437,6 +524,7 @@ class QueryTest extends VespaContainer {
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.NONE)), Map.<String, Object>of("hits", 0)),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH_ONE)), Map.<String, Object>of("hits", 1)),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH)), Map.<String, Object>of()),
+                Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.STORE)), Map.<String, Object>of()),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.NONE)).hits(Property.ofValue(3)), Map.<String, Object>of("hits", 3)),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH_ONE)).parameters(Property.ofValue(Map.of("count", 2))), Map.<String, Object>of("count", 2))
             );
@@ -452,7 +540,7 @@ class QueryTest extends VespaContainer {
 
     @Test
     void recordsCountsOutputRows() throws Exception {
-        var expected = Map.of(FetchType.FETCH, 5.0, FetchType.FETCH_ONE, 1.0, FetchType.NONE, 0.0);
+        var expected = Map.of(FetchType.FETCH, 5.0, FetchType.FETCH_ONE, 1.0, FetchType.NONE, 0.0, FetchType.STORE, 5.0);
         for (var fetchTypeAndRecords : expected.entrySet()) {
             var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).hits(Property.ofValue(5)).fetchType(Property.ofValue(fetchTypeAndRecords.getKey())).build();
             var runContext = runContextFactory.of();
@@ -502,6 +590,12 @@ class QueryTest extends VespaContainer {
             rows.add(row);
         }
         return rows;
+    }
+
+    private static List<Map<String, Object>> stored(RunContext runContext, Query.Output output) throws IOException {
+        try (var file = runContext.storage().getFile(output.getUri())) {
+            return FileSerde.readAll(file, new TypeReference<Map<String, Object>>() {}).collectList().block();
+        }
     }
 
     private static ListAppender<ILoggingEvent> capture(RunContext runContext) {
