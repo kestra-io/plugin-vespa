@@ -39,14 +39,15 @@
 
 ## Why
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+- What user problem does this solve? Teams query Vespa from flows with `curl` in shell tasks, with no typed outputs and no secret masking for the data-plane token.
+- Why would a team adopt this plugin in a workflow? It runs Vespa queries as a typed task in the same Kestra flow as the steps that feed and use the results, with retries, secrets and notifications.
+- What operational/business outcome does it enable? Search and retrieval steps (text, vector and hybrid queries) become part of orchestrated, observable pipelines instead of ad hoc scripts.
 
 ## What
 
 - Provides plugin components under `io.kestra.plugin.vespa`.
-- Includes classes such as `Example`, `Trigger`.
+- Includes the `Query` task, which runs one YQL query on the Vespa query API and returns the hits as rows.
+- The connection (`endpoint`, `token`, timeouts) lives in `VespaConnectionInterface` and `AbstractVespaTask`, shared by the tasks.
 
 ## Running Kestra locally with this plugin
 

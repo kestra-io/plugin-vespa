@@ -1,7 +1,10 @@
 @PluginSubGroup(
     title = "Vespa",
-    description = "Vespa plugin for Kestra",
-    categories = PluginSubGroup.PluginCategory.DATA
+    description = "Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search.",
+    categories = {
+        PluginSubGroup.PluginCategory.DATA,
+        PluginSubGroup.PluginCategory.AI
+    }
 )
 package io.kestra.plugin.vespa;
 
