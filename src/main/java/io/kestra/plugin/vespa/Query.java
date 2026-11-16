@@ -19,6 +19,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
+import org.apache.commons.lang3.StringUtils;
 
 import java.net.URI;
 import java.time.Duration;
@@ -99,12 +100,20 @@ import java.util.stream.Stream;
     }
 )
 public class Query extends AbstractVespaTask implements RunnableTask<Query.Output> {
-    @Schema(title = "YQL query", description = "Like `select * from music where genre contains \"jazz\"`.")
+    @Schema(
+        title = "YQL query",
+        description = """
+            Like `select * from music where genre contains "jazz"`."""
+    )
     @NotNull
     @PluginProperty(group = "main")
     private Property<String> yql;
 
-    @Schema(title = "Text for `userQuery()` in the YQL")
+    @Schema(
+        title = "Text for `userQuery()` in the YQL",
+        description = """
+            Unset, a YQL that uses `userQuery()` fails with Vespa's "No query"."""
+    )
     @PluginProperty(group = "main")
     private Property<String> query;
 
@@ -125,11 +134,19 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @PluginProperty(group = "main")
     private Property<@Min(0) Integer> offset;
 
-    @Schema(title = "Rank profile to rank the hits with", description = "Sent as `ranking.profile`.")
+    @Schema(
+        title = "Rank profile to rank the hits with",
+        description = """
+            Sent as `ranking.profile`. Unset, Vespa ranks with the `default` profile."""
+    )
     @PluginProperty(group = "main")
     private Property<String> ranking;
 
-    @Schema(title = "Vespa's own time limit for the query", description = "The task's `timeout` bounds the whole task; this one is sent to Vespa.")
+    @Schema(
+        title = "Vespa's own time limit for the query",
+        description = """
+            Unset, Vespa's default is 0.5 seconds. The task's `timeout` bounds the whole task; this one is sent to Vespa."""
+    )
     @PluginProperty(group = "advanced")
     private Property<Duration> queryTimeout;
 
@@ -171,7 +188,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
             answer = request(runContext, client, request).getBody();
         }
         if (answer == null || answer.isBlank()) {
-            throw new IllegalStateException("Vespa sent an empty answer to the query.");
+            throw new IllegalStateException("Vespa sent an empty answer to the query; check that `endpoint` is the URL of the Vespa container cluster.");
         }
 
         var root = root(answer);
@@ -194,10 +211,10 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         try {
             json = JacksonMapper.ofJson().readTree(answer);
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Vespa's answer to the query isn't JSON: %s".formatted(answer), e);
+            throw new IllegalStateException("Vespa's answer to the query isn't JSON; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)), e);
         }
         if (!json.path("root").isObject()) {
-            throw new IllegalStateException("Vespa's answer to the query has no root: %s".formatted(answer));
+            throw new IllegalStateException("Vespa's answer to the query has no root; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
         }
         return json.get("root");
     }
@@ -263,16 +280,32 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "Hits as rows", description = "Only with `fetchType=FETCH`. Each row holds `id`, `relevance` and the document under `fields`.")
+        @Schema(
+            title = "Hits as rows",
+            description = """
+                Only with `fetchType=FETCH`. Each row holds `id`, `relevance` and the document under `fields`."""
+        )
         private List<Map<String, Object>> rows;
 
-        @Schema(title = "First hit as a row", description = "Only with `fetchType=FETCH_ONE`; null when nothing matched.")
+        @Schema(
+            title = "First hit as a row",
+            description = """
+                Only with `fetchType=FETCH_ONE`; null when nothing matched."""
+        )
         private Map<String, Object> row;
 
-        @Schema(title = "Number of rows in the outputs", description = "Null with `fetchType=NONE`.")
+        @Schema(
+            title = "Number of rows in the outputs",
+            description = """
+                Null with `fetchType=NONE`."""
+        )
         private Integer size;
 
-        @Schema(title = "Number of documents matching the query", description = "Vespa's `totalCount`, which can be larger than the hits returned.")
+        @Schema(
+            title = "Number of documents matching the query",
+            description = """
+                Vespa's `totalCount`, which can be larger than the hits returned."""
+        )
         private Long totalCount;
     }
 }

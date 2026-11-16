@@ -177,16 +177,21 @@ class QueryTest extends VespaContainer {
     @Test
     void parameterClashesWithProperty() throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Query.builder()
-                .endpoint(Property.ofValue(stub.endpoint()))
-                .yql(Property.ofValue(CONTAINS_JAZZ_QUERY))
-                .hits(Property.ofValue(3))
-                .parameters(Property.ofValue(Map.of("hits", 5)))
-                .build();
+            var cases = Map.of(
+                "yql", Query.builder().parameters(Property.ofValue(Map.of("yql", "select * from music where true"))),
+                "query", Query.builder().query(Property.ofValue("blue")).parameters(Property.ofValue(Map.of("query", "red"))),
+                "hits", Query.builder().hits(Property.ofValue(3)).parameters(Property.ofValue(Map.of("hits", 5))),
+                "offset", Query.builder().offset(Property.ofValue(1)).parameters(Property.ofValue(Map.of("offset", 2))),
+                "ranking", Query.builder().ranking(Property.ofValue("closeness")).parameters(Property.ofValue(Map.of("ranking", "default"))),
+                "queryTimeout", Query.builder().queryTimeout(Property.ofValue(Duration.ofSeconds(1))).parameters(Property.ofValue(Map.of("timeout", "2s")))
+            );
+            for (var propertyAndBuilder : cases.entrySet()) {
+                var task = propertyAndBuilder.getValue().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
-            var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()), propertyAndBuilder.getKey());
 
-            assertThat(e.getMessage(), containsString("'hits'"));
+                assertThat(propertyAndBuilder.getKey(), e.getMessage(), containsString("task property '" + propertyAndBuilder.getKey() + "'"));
+            }
             assertThat(stub.seen(), is(empty()));
         }
     }
@@ -263,12 +268,14 @@ class QueryTest extends VespaContainer {
 
     @Test
     void emptyAnswer() throws Exception {
-        try (var stub = VespaStub.answering("")) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+        for (var answer : List.of("", " ")) {
+            try (var stub = VespaStub.answering(answer)) {
+                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
-            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answer + "'");
 
-            assertThat(e.getMessage(), containsString("empty answer"));
+                assertThat(e.getMessage(), allOf(containsString("empty answer"), containsString("endpoint")));
+            }
         }
     }
 
@@ -282,7 +289,7 @@ class QueryTest extends VespaContainer {
 
                 var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), answer);
 
-                assertThat(answer, e.getMessage(), containsString("no root"));
+                assertThat(answer, e.getMessage(), allOf(containsString("no root"), containsString("endpoint")));
             }
         }
     }
@@ -294,7 +301,20 @@ class QueryTest extends VespaContainer {
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(e.getMessage(), allOf(containsString("isn't JSON"), containsString("<html>Bad gateway</html>")));
+            assertThat(e.getMessage(), allOf(containsString("isn't JSON"), containsString("<html>Bad gateway</html>"), containsString("endpoint")));
+        }
+    }
+
+    @Test
+    void longAnswerCutInMessage() throws Exception {
+        var answer = "<html>" + "x".repeat(5000) + "</html>";
+        try (var stub = VespaStub.answering(answer)) {
+            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), allOf(containsString("<html>xxx"), not(containsString("</html>"))));
+            assertThat(e.getMessage().length(), lessThan(1300));
         }
     }
 
