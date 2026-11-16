@@ -53,7 +53,7 @@ class GetTest extends VespaContainer {
     @Test
     void numberGroupAndOddCharacters() throws Exception {
         // Vespa answers a missing document with the ID it read from the path, so a wrong path shows as a different ID
-        for (var id : List.of("id:mynamespace:music:n=1:x", "id:mynamespace:music:g=g1:x", "id:mynamespace:music::a:b?c#d%e+f", "id:my namespace:music::x")) {
+        for (var id : List.of("id:mynamespace:music:n=1:x", "id:mynamespace:music:g=g1:x", "id:mynamespace:music::a:b?c#d%e+f", "id:my namespace:music::x", "id:mynamespace:music::a.b", "id:mynamespace:music::...")) {
             var task = Get.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue(id)).build();
 
             var output = task.run(runContextFactory.of());
@@ -93,7 +93,7 @@ class GetTest extends VespaContainer {
 
             var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), "errorOnMissing " + errorOnMissing);
 
-            assertThat("errorOnMissing " + errorOnMissing, e.getMessage(), containsString("nosuchtype"));
+            assertThat("errorOnMissing " + errorOnMissing, e.getMessage(), allOf(containsString("404"), containsString("Unknown bucket space mapping")));
         }
     }
 
@@ -111,7 +111,15 @@ class GetTest extends VespaContainer {
             "id:mynamespace:music:n=abc:x",
             "id:mynamespace:music:n=:x",
             "id:mynamespace:music:g=:x",
-            "id:mynamespace:music:x=1:y"
+            "id:mynamespace:music:x=1:y",
+            "id:mynamespace:music::.",
+            "id:mynamespace:music::..",
+            "id:.:music::x",
+            "id:..:music::x",
+            "id:mynamespace:.:x:y",
+            "id:mynamespace:..::x",
+            "id:mynamespace:music:g=.:x",
+            "id:mynamespace:music:g=..:x"
         );
         try (var stub = VespaStub.answering(DOCUMENT)) {
             for (var id : ids) {

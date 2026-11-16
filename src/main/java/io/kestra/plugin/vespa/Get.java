@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 @SuperBuilder
 @ToString
@@ -73,6 +74,9 @@ import java.util.regex.Pattern;
     }
 )
 public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
+    // namespace, document type, an optional number or group, then the key, which may hold any character, `:` included
+    private static final Pattern DOCUMENT_ID = Pattern.compile("id:([^:]+):([^:]+):(?:n=(\\d+)|g=([^:]+))?:(.+)");
+
     @Schema(
         title = "Vespa document ID",
         description = """
@@ -116,29 +120,19 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
             .build();
     }
 
-    // the number or group part picks Vespa's number/ or group/ path; the key after it may hold any character, `:` included
+    // a part that is only dots would reach the server as a path step, and Vespa refuses it even encoded
     private static String path(String documentId) {
-        var parts = Pattern.compile("id:([^:]+):([^:]+):([^:]*):(.+)").matcher(documentId);
-        if (!parts.matches()) {
-            throw invalid(documentId);
+        var parts = DOCUMENT_ID.matcher(documentId);
+        if (!parts.matches() || Stream.of(parts.group(1), parts.group(2), parts.group(4), parts.group(5)).anyMatch(part -> ".".equals(part) || "..".equals(part))) {
+            throw new IllegalArgumentException("The Vespa document ID must look like id:<namespace>:<document type>::<key>, with an optional n=<number> or g=<group> between the last two colons, got: '%s'.".formatted(documentId));
         }
-        var location = parts.group(3);
-        var prefix = "/document/v1/" + encode(parts.group(1)) + "/" + encode(parts.group(2)) + "/";
-        var key = encode(parts.group(4));
-        if (location.isEmpty()) {
-            return prefix + "docid/" + key;
+        var location = "docid/";
+        if (parts.group(3) != null) {
+            location = "number/" + parts.group(3) + "/";
+        } else if (parts.group(4) != null) {
+            location = "group/" + encode(parts.group(4)) + "/";
         }
-        if (location.matches("n=\\d+")) {
-            return prefix + "number/" + location.substring(2) + "/" + key;
-        }
-        if (location.matches("g=.+")) {
-            return prefix + "group/" + encode(location.substring(2)) + "/" + key;
-        }
-        throw invalid(documentId);
-    }
-
-    private static IllegalArgumentException invalid(String documentId) {
-        return new IllegalArgumentException("The Vespa document ID must look like id:<namespace>:<document type>::<key>, with an optional n=<number> or g=<group> between the last two colons, got: '%s'.".formatted(documentId));
+        return "/document/v1/" + encode(parts.group(1)) + "/" + encode(parts.group(2)) + "/" + location + encode(parts.group(5));
     }
 
     private static String encode(String segment) {

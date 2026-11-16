@@ -25,5 +25,5 @@ unless the application raises its limits.
 
 `Get` reads one document by its full ID (`documentId`, like `id:mynamespace:music::kind-of-blue`, or with a
 `n=<number>` or `g=<group>` part) from Vespa's [document API](https://docs.vespa.ai/en/reference/document-v1-api-reference.html)
-and returns `id` and `document`, the document's fields. A `Query` hit's `id` can be passed straight in. A document
+and returns `id` and `document`, the document's fields. A `Query` hit's `id` can be passed straight in when the hit carries the document ID, as with `select *`. A document
 that doesn't exist gives a null `document`; set `errorOnMissing: true` to fail the task instead.
