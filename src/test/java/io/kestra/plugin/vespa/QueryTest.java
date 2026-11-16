@@ -307,14 +307,17 @@ class QueryTest extends VespaContainer {
 
     @Test
     void longAnswerCutInMessage() throws Exception {
-        var answer = "<html>" + "x".repeat(5000) + "</html>";
-        try (var stub = VespaStub.answering(answer)) {
-            var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
+        var notJson = "<html>" + "x".repeat(5000) + "END</html>";
+        var noRoot = "{\"other\": \"" + "x".repeat(5000) + "END\"}";
+        for (var answer : List.of(notJson, noRoot)) {
+            try (var stub = VespaStub.answering(answer)) {
+                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build();
 
-            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(e.getMessage(), allOf(containsString("<html>xxx"), not(containsString("</html>"))));
-            assertThat(e.getMessage().length(), lessThan(1300));
+                assertThat(e.getMessage(), allOf(containsString(answer.substring(0, 20)), not(containsString("END"))));
+                assertThat(e.getMessage().length(), lessThan(1300));
+            }
         }
     }
 
