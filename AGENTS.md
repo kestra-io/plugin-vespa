@@ -24,6 +24,9 @@ Infrastructure dependencies (Docker Compose services):
 
 - `app`
 
+Tests run Vespa itself in a Testcontainers container (`VespaContainer`, image `vespaengine/vespa`), deployed with the
+application package and catalog under `src/test/resources/vespa/`.
+
 ### Key Plugin Classes
 
 - `io.kestra.plugin.vespa.Query`

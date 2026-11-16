@@ -29,7 +29,7 @@ java {
 }
 
 group = "io.kestra.plugin"
-description = 'Vespa plugin for Kestra'
+description = 'Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search.'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
