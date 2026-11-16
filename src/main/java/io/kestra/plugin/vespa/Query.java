@@ -297,7 +297,8 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         @Schema(
             title = "Hits as rows",
             description = """
-                Only with `fetchType=FETCH`. Each row holds `id`, `relevance` and the document under `fields`."""
+                Only with `fetchType=FETCH`; with `STORE` the rows are in the file at `uri`. Each row holds `id`, \
+                `relevance` and the document under `fields`."""
         )
         private List<Map<String, Object>> rows;
 
