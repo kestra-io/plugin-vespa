@@ -46,11 +46,12 @@ import java.util.stream.Stream;
     description = """
         Runs one YQL query on the Vespa query API and returns the hits of that one answer as rows, in Vespa's own hit \
         shape: `id`, `relevance` and the document's summary fields under `fields`, read like `rows[0].fields.album`. \
-        Default `fetchType=FETCH`."""
+        With `fetchType=STORE` the rows go to an ION file in Kestra's internal storage instead, and the outputs carry its \
+        `uri`. Default `fetchType=FETCH`."""
 )
 @Plugin(
     metrics = {
-        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of rows given in the outputs")
+        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of rows in the outputs or in the stored file")
     },
     examples = {
         @Example(

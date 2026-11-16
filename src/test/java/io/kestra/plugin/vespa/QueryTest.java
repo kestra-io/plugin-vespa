@@ -261,11 +261,13 @@ class QueryTest extends VespaContainer {
 
     @Test
     void invalidYql() {
-        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue("select * frm music")).build();
+        for (var fetchType : List.of(FetchType.FETCH, FetchType.STORE)) {
+            var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue("select * frm music")).fetchType(Property.ofValue(fetchType)).build();
 
-        var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
+            var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), fetchType.name());
 
-        assertThat(e.getMessage(), allOf(containsString("400"), containsString("mismatched input 'frm'")));
+            assertThat(fetchType.name(), e.getMessage(), allOf(containsString("400"), containsString("mismatched input 'frm'")));
+        }
     }
 
     @Test
@@ -412,6 +414,7 @@ class QueryTest extends VespaContainer {
         assertThat(stored(runContext, output), is(empty()));
         assertThat(output.getSize(), is(0));
         assertThat(output.getTotalCount(), is(0L));
+        assertThat(runContext.metrics().stream().filter(m -> m.getName().equals("records")).findFirst().orElseThrow().getValue(), is(0.0));
     }
 
     @Test
@@ -472,13 +475,14 @@ class QueryTest extends VespaContainer {
 
     @Test
     void storeFailsOnBadAnswers() throws Exception {
-        for (var answer : List.of("", "<html>Bad gateway</html>", "{}")) {
-            try (var stub = VespaStub.answering(answer)) {
+        var messages = Map.of("", "empty answer", "<html>Bad gateway</html>", "isn't JSON", "{}", "no root");
+        for (var answerAndMessage : messages.entrySet()) {
+            try (var stub = VespaStub.answering(answerAndMessage.getKey())) {
                 var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
 
-                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answer + "'");
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answerAndMessage.getKey() + "'");
 
-                assertThat(answer, e.getMessage(), containsString("endpoint"));
+                assertThat(answerAndMessage.getKey(), e.getMessage(), allOf(containsString(answerAndMessage.getValue()), containsString("endpoint")));
             }
         }
     }
@@ -526,7 +530,8 @@ class QueryTest extends VespaContainer {
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH)), Map.<String, Object>of()),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.STORE)), Map.<String, Object>of()),
                 Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.NONE)).hits(Property.ofValue(3)), Map.<String, Object>of("hits", 3)),
-                Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH_ONE)).parameters(Property.ofValue(Map.of("count", 2))), Map.<String, Object>of("count", 2))
+                Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.FETCH_ONE)).parameters(Property.ofValue(Map.of("count", 2))), Map.<String, Object>of("count", 2)),
+                Map.entry(Query.builder().fetchType(Property.ofValue(FetchType.STORE)).parameters(Property.ofValue(Map.of("count", 2))), Map.<String, Object>of("count", 2))
             );
             for (var builderAndSent : cases) {
                 builderAndSent.getKey().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).build().run(runContextFactory.of());
