@@ -1,6 +1,5 @@
 package io.kestra.plugin.vespa;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.kestra.core.http.HttpRequest;
@@ -20,13 +19,9 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 @SuperBuilder
 @ToString
@@ -74,9 +69,6 @@ import java.util.stream.Stream;
     }
 )
 public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
-    // namespace, document type, an optional number or group, then the key, which may hold `:`
-    private static final Pattern DOCUMENT_ID = Pattern.compile("id:([^:]+):([^:]+):(?:n=(\\d+)|g=([^:]+))?:(.+)");
-
     @Schema(
         title = "Vespa document ID",
         description = """
@@ -101,7 +93,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
     public Output run(RunContext runContext) throws Exception {
         var rDocumentId = runContext.render(documentId).as(String.class).orElse("");
         var rErrorOnMissing = runContext.render(errorOnMissing).as(Boolean.class).orElse(false);
-        var request = HttpRequest.builder().uri(URI.create(path(rDocumentId))).method("GET").build();
+        var request = HttpRequest.builder().uri(URI.create(documentPath(rDocumentId))).method("GET").build();
 
         String answer;
         try (var client = client(runContext)) {
@@ -121,25 +113,6 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
             .build();
     }
 
-    // a part that is exactly `.` or `..` would reach the server as a path step, and Vespa refuses it even encoded
-    private static String path(String documentId) {
-        var parts = DOCUMENT_ID.matcher(documentId);
-        if (!parts.matches() || Stream.of(parts.group(1), parts.group(2), parts.group(4), parts.group(5)).anyMatch(part -> ".".equals(part) || "..".equals(part))) {
-            throw new IllegalArgumentException("The Vespa document ID must look like id:<namespace>:<document type>::<key>, with an optional n=<number> or g=<group> between the last two colons, got: '%s'.".formatted(documentId));
-        }
-        var location = "docid/";
-        if (parts.group(3) != null) {
-            location = "number/" + parts.group(3) + "/";
-        } else if (parts.group(4) != null) {
-            location = "group/" + encode(parts.group(4)) + "/";
-        }
-        return "/document/v1/" + encode(parts.group(1)) + "/" + encode(parts.group(2)) + "/" + location + encode(parts.group(5));
-    }
-
-    private static String encode(String segment) {
-        return URLEncoder.encode(segment, StandardCharsets.UTF_8).replace("+", "%20");
-    }
-
     // only Vespa's own not-found answer counts: a wrong document type or another server's 404 carries no such body
     private static Optional<String> missingId(HttpClientResponseException e) {
         if (e.getResponse() == null || e.getResponse().getStatus().getCode() != 404 || !(e.getResponse().getBody() instanceof byte[] body)) {
@@ -154,15 +127,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
     }
 
     private static JsonNode document(String answer) {
-        if (answer == null || answer.isBlank()) {
-            throw new IllegalStateException("Vespa sent an empty answer to the get; check that `endpoint` is the URL of the Vespa container cluster.");
-        }
-        JsonNode json;
-        try {
-            json = JacksonMapper.ofJson().readTree(answer);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Vespa's answer to the get isn't JSON; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)), e);
-        }
+        var json = answer(answer, "get");
         if (!json.path("id").isTextual() || !json.path("fields").isObject()) {
             throw new IllegalStateException("Vespa's answer to the get isn't a document; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
         }
