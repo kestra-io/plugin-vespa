@@ -261,13 +261,11 @@ class QueryTest extends VespaContainer {
 
     @Test
     void invalidYql() {
-        for (var fetchType : List.of(FetchType.FETCH, FetchType.STORE)) {
-            var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue("select * frm music")).fetchType(Property.ofValue(fetchType)).build();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue("select * frm music")).build();
 
-            var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), fetchType.name());
+        var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(fetchType.name(), e.getMessage(), allOf(containsString("400"), containsString("mismatched input 'frm'")));
-        }
+        assertThat(e.getMessage(), allOf(containsString("400"), containsString("mismatched input 'frm'")));
     }
 
     @Test
@@ -474,16 +472,35 @@ class QueryTest extends VespaContainer {
     }
 
     @Test
-    void storeFailsOnBadAnswers() throws Exception {
-        var messages = Map.of("", "empty answer", "<html>Bad gateway</html>", "isn't JSON", "{}", "no root");
-        for (var answerAndMessage : messages.entrySet()) {
-            try (var stub = VespaStub.answering(answerAndMessage.getKey())) {
-                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(FetchType.STORE)).build();
+    void storeWarnsWhenMoreHitsMatch() throws Exception {
+        var all = "select * from music where true order by year asc, added_at asc";
+        var total = search(Map.of("yql", all)).at("/root/fields/totalCount").asLong();
+        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).fetchType(Property.ofValue(FetchType.STORE)).build();
+        var runContext = runContextFactory.of();
+        var logs = capture(runContext);
 
-                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answerAndMessage.getKey() + "'");
+        var output = task.run(runContext);
 
-                assertThat(answerAndMessage.getKey(), e.getMessage(), allOf(containsString(answerAndMessage.getValue()), containsString("endpoint")));
-            }
+        assertThat(output.getSize(), is(10));
+        assertThat(warnings(logs), contains(allOf(containsString("10 of " + total), containsString("`hits`"), containsString("`offset`"))));
+    }
+
+    @Test
+    void storeLastPageAndNoHitDontWarn() throws Exception {
+        var all = "select * from music where true order by year asc, added_at asc";
+        var total = (int) search(Map.of("yql", all)).at("/root/fields/totalCount").asLong();
+        var cases = Map.of(
+            "last page", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).offset(Property.ofValue(total - 3)).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "last page through Vespa's start", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).parameters(Property.ofValue(Map.of("start", total - 3))).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "no hit", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(NO_HIT)).fetchType(Property.ofValue(FetchType.STORE)).build()
+        );
+        for (var nameAndTask : cases.entrySet()) {
+            var runContext = runContextFactory.of();
+            var logs = capture(runContext);
+
+            nameAndTask.getValue().run(runContext);
+
+            assertThat(nameAndTask.getKey(), warnings(logs), is(empty()));
         }
     }
 

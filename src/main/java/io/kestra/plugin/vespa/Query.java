@@ -182,10 +182,11 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     public Output run(RunContext runContext) throws Exception {
         var rFetchType = runContext.render(fetchType).as(FetchType.class).orElse(FetchType.FETCH);
 
+        var body = body(runContext, rFetchType);
         var request = HttpRequest.builder()
             .uri(URI.create("/search/"))
             .method("POST")
-            .body(HttpRequest.JsonRequestBody.of(body(runContext, rFetchType)))
+            .body(HttpRequest.JsonRequestBody.of(body))
             .build();
         String answer;
         try (var client = client(runContext)) {
@@ -207,6 +208,9 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
             case STORE -> output.uri(store(runContext, rows)).size(rows.size()).build();
             default -> output.build();
         };
+        if (rFetchType == FetchType.STORE && offset(body) + rows.size() < built.getTotalCount()) {
+            runContext.logger().warn("Stored {} of {} matching hits; raise `hits` or page with `offset` to store more.", rows.size(), built.getTotalCount());
+        }
         runContext.metric(Counter.of("records", built.getSize() == null ? 0 : built.getSize()));
         return built;
     }
@@ -218,6 +222,15 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
             FileSerde.writeAll(output, Flux.fromIterable(rows)).block();
         }
         return runContext.storage().putFile(file);
+    }
+
+    // the offset can come from the property or from `parameters` under Vespa's names `offset` and `start`
+    private static long offset(Map<String, Object> body) {
+        return body.entrySet().stream()
+            .filter(entry -> Set.of("offset", "start").contains(entry.getKey().toLowerCase(Locale.ROOT)))
+            .map(entry -> entry.getValue() instanceof Number number ? number.longValue() : Long.parseLong(String.valueOf(entry.getValue())))
+            .findFirst()
+            .orElse(0L);
     }
 
     private static JsonNode root(String answer) {
