@@ -100,6 +100,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
     @Override
     public Output run(RunContext runContext) throws Exception {
         var rDocumentId = runContext.render(documentId).as(String.class).orElse("");
+        var rErrorOnMissing = runContext.render(errorOnMissing).as(Boolean.class).orElse(false);
         var request = HttpRequest.builder().uri(URI.create(path(rDocumentId))).method("GET").build();
 
         String answer;
@@ -107,7 +108,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
             answer = request(runContext, client, request).getBody();
         } catch (HttpClientResponseException e) {
             var missingId = missingId(e).orElseThrow(() -> e);
-            if (runContext.render(errorOnMissing).as(Boolean.class).orElse(false)) {
+            if (rErrorOnMissing) {
                 throw new IllegalStateException("The Vespa document '%s' doesn't exist; check `documentId`, or set `errorOnMissing: false` to get a null `document`.".formatted(missingId));
             }
             return Output.builder().id(missingId).build();

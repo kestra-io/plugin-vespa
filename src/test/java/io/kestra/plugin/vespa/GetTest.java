@@ -1,6 +1,7 @@
 package io.kestra.plugin.vespa;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.kestra.core.exceptions.IllegalVariableEvaluationException;
 import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.validations.ModelValidator;
@@ -191,21 +192,32 @@ class GetTest extends VespaContainer {
 
                 var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), answer);
 
-                assertThat(answer, e.getMessage(), containsString("404"));
+                assertThat(answer, e.getMessage(), allOf(containsString("404"), containsString(answer)));
             }
         }
     }
 
     @Test
     void serverError() throws Exception {
-        try (var stub = VespaStub.answering(500, """
-            {"pathId": "/document/v1/mynamespace/music/docid/kind-of-blue", "message": "Content cluster is down"}""")) {
-            var task = Get.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(KIND_OF_BLUE)).errorOnMissing(Property.ofValue(false)).build();
+        // the second answer has the not-found shape, only its status tells it apart
+        for (var answer : List.of("""
+            {"pathId": "/document/v1/mynamespace/music/docid/kind-of-blue", "message": "Content cluster is down"}""", """
+            {"id": "id:mynamespace:music::kind-of-blue"}""")) {
+            try (var stub = VespaStub.answering(500, answer)) {
+                var task = Get.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(KIND_OF_BLUE)).errorOnMissing(Property.ofValue(false)).build();
 
-            var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), answer);
 
-            assertThat(e.getMessage(), allOf(containsString("500"), containsString("Content cluster is down")));
+                assertThat(answer, e.getMessage(), allOf(containsString("500"), containsString(answer)));
+            }
         }
+    }
+
+    @Test
+    void errorOnMissingCheckedWhenFound() {
+        var task = Get.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue(KIND_OF_BLUE)).errorOnMissing(Property.ofExpression("{{ 'not a boolean' }}")).build();
+
+        assertThrows(IllegalVariableEvaluationException.class, () -> task.run(runContextFactory.of()));
     }
 
     @Test
