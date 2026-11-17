@@ -1,7 +1,7 @@
 # How to use the Vespa plugin
 
-Query a [Vespa](https://docs.vespa.ai/) application from Kestra flows with YQL (text, vector and hybrid search), and
-read documents by their ID.
+Query a [Vespa](https://docs.vespa.ai/) application from Kestra flows with YQL (text, vector and hybrid search), read
+documents by their ID, and delete documents by ID or by selection.
 
 ## Authentication
 
@@ -28,3 +28,10 @@ unless the application raises its limits.
 and returns `id` and `document`, the document's fields. A `Query` hit's `id` can be passed straight in when the hit
 carries the document ID, as with `select *`. A document that doesn't exist gives a null `document`; set
 `errorOnMissing: true` to fail the task instead.
+
+`Delete` removes one document by its full ID (`documentId`, same format as `Get`), or every document a
+[document selection](https://docs.vespa.ai/en/reference/document-select-language.html) matches (`selection`, like
+`music.artist == "Miles Davis"`) in the content cluster `cluster`. Set exactly one of `documentId` and `selection`. A
+delete by selection fails before sending anything unless `allowSelection: true`, since `selection: true` matches every
+document. It returns `deleted`, the number of documents removed; for a delete by ID Vespa answers the same whether the
+document existed, so `deleted` is null and a mistyped ID succeeds without removing anything.

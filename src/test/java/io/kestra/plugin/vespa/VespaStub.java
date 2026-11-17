@@ -12,22 +12,27 @@ import java.util.concurrent.CopyOnWriteArrayList;
 // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect, a hand-made answer.
 record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
     static VespaStub start() throws IOException {
-        return start(Duration.ZERO, 200, null, "{}");
+        return start(Duration.ZERO, 200, null, List.of("{}"));
     }
 
     static VespaStub answering(String body) throws IOException {
-        return start(Duration.ZERO, 200, null, body);
+        return start(Duration.ZERO, 200, null, List.of(body));
+    }
+
+    // one answer per request in order, the last one repeated
+    static VespaStub answering(List<String> bodies) throws IOException {
+        return start(Duration.ZERO, 200, null, bodies);
     }
 
     static VespaStub answering(int status, String body) throws IOException {
-        return start(Duration.ZERO, status, null, body);
+        return start(Duration.ZERO, status, null, List.of(body));
     }
 
     static VespaStub start(Duration delay, int status, String location) throws IOException {
-        return start(delay, status, location, "{}");
+        return start(delay, status, location, List.of("{}"));
     }
 
-    private static VespaStub start(Duration delay, int status, String location, String answer) throws IOException {
+    private static VespaStub start(Duration delay, int status, String location, List<String> answers) throws IOException {
         var seen = new CopyOnWriteArrayList<Seen>();
         var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
@@ -48,7 +53,7 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
             if (location != null) {
                 exchange.getResponseHeaders().add("Location", location);
             }
-            var body = answer.getBytes(StandardCharsets.UTF_8);
+            var body = answers.get(Math.min(seen.size(), answers.size()) - 1).getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, body.length == 0 ? -1 : body.length);
             exchange.getResponseBody().write(body);
             exchange.close();

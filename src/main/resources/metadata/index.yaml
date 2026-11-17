@@ -1,8 +1,8 @@
 group: io.kestra.plugin.vespa
 name: "vespa"
 title: "Vespa"
-description: "Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search, and read documents by their ID."
-body: "Provide the Vespa endpoint, and a data-plane token for Vespa Cloud, to run YQL queries and read the hits as rows, the first hit only or just the match count, or store them in an ION file (fetch type), with a rank profile, query tensors and any other query API parameter; or read one document by its ID."
+description: "Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search, read documents by their ID, and delete documents by ID or by selection."
+body: "Provide the Vespa endpoint, and a data-plane token for Vespa Cloud, to run YQL queries and read the hits as rows, the first hit only or just the match count, or store them in an ION file (fetch type), with a rank profile, query tensors and any other query API parameter; read one document by its ID; or delete one document by its ID, or every document a selection matches once `allowSelection` is set."
 videos: []
 createdBy: "Kestra Core Team"
 managedBy: "Kestra Core Team"

@@ -127,6 +127,22 @@ public class VespaContainer {
         return MAPPER.readTree(response.body());
     }
 
+    /** Feeds one document on {@code path} without the plugin: the delete tests' own data, never the catalog. */
+    static void put(String path, Map<String, Object> fields) throws IOException {
+        var response = send(HttpRequest.newBuilder(URI.create(url(8080) + path))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(Map.of("fields", fields))))
+            .build());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Vespa refused the put on %s with status %d: %s".formatted(path, response.statusCode(), response.body()));
+        }
+    }
+
+    /** Vespa's status for a document GET on {@code path}: 404 once the document is gone. */
+    static int status(String path) {
+        return send(get(url(8080) + path)).statusCode();
+    }
+
     private static String url(int containerPort) {
         return "http://" + VESPA.getHost() + ":" + VESPA.getMappedPort(containerPort);
     }

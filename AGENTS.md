@@ -5,6 +5,7 @@
 - Provides plugin components under `io.kestra.plugin.vespa`.
 - Includes the `Query` task, which runs one YQL query on the Vespa query API and returns the hits as rows, or writes them to an ION file in Kestra's internal storage with `fetchType: STORE`.
 - Includes the `Get` task, which reads one document by its ID from the Vespa document API and returns its fields, or a null `document` when it doesn't exist (`errorOnMissing: true` fails instead).
+- Includes the `Delete` task, which removes one document by its ID, or every document a selection expression matches in a content cluster with `allowSelection: true`, and returns the `deleted` count for a selection.
 - The connection (`endpoint`, `token`, timeouts) lives in `VespaConnectionInterface` and `AbstractVespaTask`, shared by the tasks.
 
 ## Why
@@ -32,6 +33,7 @@ application package and catalog under `src/test/resources/vespa/`.
 
 - `io.kestra.plugin.vespa.Query`
 - `io.kestra.plugin.vespa.Get`
+- `io.kestra.plugin.vespa.Delete`
 - `io.kestra.plugin.vespa.AbstractVespaTask`
 - `io.kestra.plugin.vespa.VespaConnectionInterface`
 
