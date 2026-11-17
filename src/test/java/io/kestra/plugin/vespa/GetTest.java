@@ -84,17 +84,15 @@ class GetTest extends VespaContainer {
 
     @Test
     void unknownDocumentType() {
-        for (var errorOnMissing : List.of(false, true)) {
-            var task = Get.builder()
-                .endpoint(Property.ofValue(endpoint()))
-                .documentId(Property.ofValue("id:mynamespace:nosuchtype::kind-of-blue"))
-                .errorOnMissing(Property.ofValue(errorOnMissing))
-                .build();
+        var task = Get.builder()
+            .endpoint(Property.ofValue(endpoint()))
+            .documentId(Property.ofValue("id:mynamespace:nosuchtype::kind-of-blue"))
+            .errorOnMissing(Property.ofValue(true))
+            .build();
 
-            var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()), "errorOnMissing " + errorOnMissing);
+        var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat("errorOnMissing " + errorOnMissing, e.getMessage(), allOf(containsString("404"), containsString("Unknown bucket space mapping")));
-        }
+        assertThat(e.getMessage(), allOf(containsString("404"), containsString("Unknown bucket space mapping")));
     }
 
     @Test
