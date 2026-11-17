@@ -21,6 +21,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import reactor.core.publisher.Flux;
 
 import java.io.BufferedOutputStream;
@@ -29,6 +30,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -106,6 +108,12 @@ import java.util.stream.Stream;
     }
 )
 public class Query extends AbstractVespaTask implements RunnableTask<Query.Output> {
+    // Vespa's names and aliases for what the task properties set, lower-cased since Vespa reads names in any case
+    private static final Map<String, String> PROPERTY_NAMES = Map.of(
+        "yql", "yql", "query", "query", "model.querystring", "query", "hits", "hits", "count", "hits",
+        "offset", "offset", "start", "offset", "ranking", "ranking", "ranking.profile", "ranking", "timeout", "queryTimeout"
+    );
+
     @Schema(
         title = "YQL query",
         description = """
@@ -224,13 +232,15 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         return runContext.storage().putFile(file);
     }
 
-    // the offset can come from the property or from `parameters` under Vespa's names `offset` and `start`
+    // read as Vespa reads it: `start` over `offset`, names in any case, and a value that isn't a whole number as 0
     private static long offset(Map<String, Object> body) {
-        return body.entrySet().stream()
-            .filter(entry -> Set.of("offset", "start").contains(entry.getKey().toLowerCase(Locale.ROOT)))
-            .map(entry -> entry.getValue() instanceof Number number ? number.longValue() : Long.parseLong(String.valueOf(entry.getValue())))
-            .findFirst()
-            .orElse(0L);
+        var offsets = new HashMap<String, Object>();
+        body.forEach((name, value) -> {
+            if ("offset".equals(PROPERTY_NAMES.get(name.toLowerCase(Locale.ROOT)))) {
+                offsets.put(name.toLowerCase(Locale.ROOT), value);
+            }
+        });
+        return NumberUtils.toLong(String.valueOf(offsets.getOrDefault("start", offsets.get("offset"))));
     }
 
     private static JsonNode root(String answer) {
@@ -255,17 +265,12 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         runContext.render(ranking).as(String.class).ifPresent(v -> body.put("ranking.profile", v));
         runContext.render(queryTimeout).as(Duration.class).ifPresent(v -> body.put("timeout", v.toMillis() + "ms"));
 
-        // Vespa's names and aliases for what the task properties set, lower-cased since Vespa reads names in any case
-        var properties = Map.of(
-            "yql", "yql", "query", "query", "model.querystring", "query", "hits", "hits", "count", "hits",
-            "offset", "offset", "start", "offset", "ranking", "ranking", "ranking.profile", "ranking", "timeout", "queryTimeout"
-        );
-        var setByProperties = Set.copyOf(body.keySet().stream().map(properties::get).toList());
+        var setByProperties = Set.copyOf(body.keySet().stream().map(PROPERTY_NAMES::get).toList());
 
         var rParameters = runContext.render(parameters).asMap(String.class, Object.class);
         var parameterHits = false;
         for (var name : dottedNames("", rParameters).toList()) {
-            var property = properties.get(name.toLowerCase(Locale.ROOT));
+            var property = PROPERTY_NAMES.get(name.toLowerCase(Locale.ROOT));
             if (property != null && setByProperties.contains(property)) {
                 throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(name, property));
             }

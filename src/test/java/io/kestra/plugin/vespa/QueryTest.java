@@ -475,32 +475,71 @@ class QueryTest extends VespaContainer {
     void storeWarnsWhenMoreHitsMatch() throws Exception {
         var all = "select * from music where true order by year asc, added_at asc";
         var total = search(Map.of("yql", all)).at("/root/fields/totalCount").asLong();
-        var task = Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).fetchType(Property.ofValue(FetchType.STORE)).build();
-        var runContext = runContextFactory.of();
-        var logs = capture(runContext);
+        var cases = Map.of(
+            "hits unset", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "empty start, read as 0 by Vespa", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).parameters(Property.ofValue(Map.of("start", ""))).fetchType(Property.ofValue(FetchType.STORE)).build()
+        );
+        for (var nameAndTask : cases.entrySet()) {
+            var runContext = runContextFactory.of();
+            var logs = capture(runContext);
 
-        var output = task.run(runContext);
+            var output = nameAndTask.getValue().run(runContext);
 
-        assertThat(output.getSize(), is(10));
-        assertThat(warnings(logs), contains(allOf(containsString("10 of " + total), containsString("`hits`"), containsString("`offset`"))));
+            assertThat(nameAndTask.getKey(), output.getSize(), is(10));
+            assertThat(nameAndTask.getKey(), warnings(logs), contains(allOf(containsString("10 of " + total), containsString("`hits`"), containsString("`offset`"))));
+        }
     }
 
     @Test
     void storeLastPageAndNoHitDontWarn() throws Exception {
         var all = "select * from music where true order by year asc, added_at asc";
         var total = (int) search(Map.of("yql", all)).at("/root/fields/totalCount").asLong();
+        var offsetThenStart = new LinkedHashMap<String, Object>();
+        offsetThenStart.put("offset", 5);
+        offsetThenStart.put("start", total - 3);
+        var startThenOffset = new LinkedHashMap<String, Object>();
+        startThenOffset.put("start", total - 3);
+        startThenOffset.put("offset", 5);
         var cases = Map.of(
             "last page", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).offset(Property.ofValue(total - 3)).fetchType(Property.ofValue(FetchType.STORE)).build(),
             "last page through Vespa's start", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).parameters(Property.ofValue(Map.of("start", total - 3))).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "last page through START as text", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).parameters(Property.ofValue(Map.of("START", String.valueOf(total - 3)))).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "offset then start, Vespa uses start", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).parameters(Property.ofValue(offsetThenStart)).fetchType(Property.ofValue(FetchType.STORE)).build(),
+            "start then offset, Vespa uses start", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(all)).hits(Property.ofValue(3)).parameters(Property.ofValue(startThenOffset)).fetchType(Property.ofValue(FetchType.STORE)).build(),
             "no hit", Query.builder().endpoint(Property.ofValue(endpoint())).yql(Property.ofValue(NO_HIT)).fetchType(Property.ofValue(FetchType.STORE)).build()
         );
         for (var nameAndTask : cases.entrySet()) {
             var runContext = runContextFactory.of();
             var logs = capture(runContext);
 
-            nameAndTask.getValue().run(runContext);
+            var output = nameAndTask.getValue().run(runContext);
 
             assertThat(nameAndTask.getKey(), warnings(logs), is(empty()));
+            if (!nameAndTask.getKey().equals("no hit")) {
+                assertThat(nameAndTask.getKey(), output.getSize(), is(3));
+            }
+        }
+    }
+
+    @Test
+    void onlyStoreWarns() throws Exception {
+        try (var stub = VespaStub.answering("""
+            {"root": {
+              "fields": {"totalCount": 1000000},
+              "children": [
+                {"id": "id:mynamespace:music::kind-of-blue", "relevance": 0.9, "fields": {"album": "Kind of Blue"}},
+                {"id": "id:mynamespace:music::time-out", "relevance": 0.8, "fields": {"album": "Time Out"}}
+              ]
+            }}""")) {
+            for (var fetchType : List.of(FetchType.FETCH, FetchType.FETCH_ONE, FetchType.NONE)) {
+                var task = Query.builder().endpoint(Property.ofValue(stub.endpoint())).yql(Property.ofValue(CONTAINS_JAZZ_QUERY)).fetchType(Property.ofValue(fetchType)).build();
+                var runContext = runContextFactory.of();
+                var logs = capture(runContext);
+
+                task.run(runContext);
+
+                assertThat(fetchType.name(), warnings(logs), is(empty()));
+            }
         }
     }
 
