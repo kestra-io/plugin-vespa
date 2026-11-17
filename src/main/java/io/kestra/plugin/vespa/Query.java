@@ -232,7 +232,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         return runContext.storage().putFile(file);
     }
 
-    // read as Vespa reads it: `start` over `offset`, names in any case, and a value that isn't a whole number as 0
+    // `start` over `offset` and an empty value as 0, like Vespa; its pick when the two names differ in case isn't followed
     private static long offset(Map<String, Object> body) {
         var offsets = new HashMap<String, Object>();
         body.forEach((name, value) -> {
