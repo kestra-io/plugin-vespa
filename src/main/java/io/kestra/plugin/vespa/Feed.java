@@ -135,7 +135,8 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         description = """
             `PUT` (default) writes the whole document, replacing one with the same ID. `UPDATE` changes fields of an \
             existing document, with `fields` in Vespa's update format, like `{"album": {"assign": "Kind of Blue"}}`; \
-            an update of a missing document fails that record. A retried `UPDATE` with `increment` applies twice. \
+            Vespa accepts an update of a missing document and changes nothing, so it counts as a success. A retried \
+            `UPDATE` with `increment` applies twice. \
             `REMOVE` deletes the document; removing a missing one succeeds."""
     )
     @Builder.Default
