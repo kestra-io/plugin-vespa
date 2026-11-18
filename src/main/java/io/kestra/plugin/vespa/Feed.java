@@ -118,7 +118,7 @@ import java.util.concurrent.atomic.AtomicReference;
     }
 )
 public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>, Data.From {
-    // the client queues without limit, so memory would grow with the records; its throttler never sends more than this at once
+    // the client holds a caller back at its own limit, except for repeated operations on one document ID, which it queues without limit
     private static final int IN_FLIGHT = 4096;
 
     @Schema(
@@ -204,7 +204,7 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         killable.set(() -> Thread.ofVirtual().start(() -> client.close(false)));
         try (failures) {
             for (var record : Data.from(from).read(runContext).toIterable()) {
-                if (failures.writeError().isPresent()) {
+                if (isKilled.get() || failures.writeError().isPresent()) {
                     break;
                 }
                 CompletableFuture<Result> sent;
@@ -334,7 +334,7 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
     }
 
     // the callbacks of the client's threads write here, one at a time; a write error is kept, not thrown on their thread
-    private static final class Failures implements AutoCloseable {
+    static final class Failures implements AutoCloseable {
         private final OutputStream file;
         private final List<String> first = new ArrayList<>();
         private long count;
@@ -372,8 +372,15 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         }
 
         @Override
-        public synchronized void close() throws Exception {
-            file.close();
+        public synchronized void close() {
+            try {
+                file.close();
+            } catch (Exception e) {
+                // a full disk fails again here, on the buffered bytes; the first error is the one to report
+                if (writeError == null) {
+                    writeError = e;
+                }
+            }
         }
     }
 
