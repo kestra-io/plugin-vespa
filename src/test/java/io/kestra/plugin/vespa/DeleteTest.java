@@ -229,19 +229,24 @@ class DeleteTest extends VespaContainer {
 
     @Test
     void selectionMessage() throws Exception {
-        try (var stub = VespaStub.answering(List.of("""
-            {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}""", """
-            {"pathId": "/document/v1/", "documentCount": 2, "message": "Visiting failed: content cluster is down"}"""))) {
-            var task = Delete.builder()
-                .endpoint(Property.ofValue(stub.endpoint()))
-                .selection(Property.ofValue("true"))
-                .cluster(Property.ofValue("music"))
-                .allowSelection(Property.ofValue(true))
-                .build();
+        var lastAnswers = List.of("""
+            {"pathId": "/document/v1/", "documentCount": 2, "message": "Visiting failed: content cluster is down"}""", """
+            {"pathId": "/document/v1/", "message": "Visiting failed: content cluster is down"}""");
+        var expected = List.of("after 6 documents", "after 4 documents");
+        for (var i = 0; i < lastAnswers.size(); i++) {
+            try (var stub = VespaStub.answering(List.of("""
+                {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}""", lastAnswers.get(i)))) {
+                var task = Delete.builder()
+                    .endpoint(Property.ofValue(stub.endpoint()))
+                    .selection(Property.ofValue("true"))
+                    .cluster(Property.ofValue("music"))
+                    .allowSelection(Property.ofValue(true))
+                    .build();
 
-            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), lastAnswers.get(i));
 
-            assertThat(e.getMessage(), allOf(containsString("after 6 documents"), containsString("Visiting failed: content cluster is down")));
+                assertThat(lastAnswers.get(i), e.getMessage(), allOf(startsWith("Vespa stopped the delete by selection"), containsString(expected.get(i)), containsString("Visiting failed: content cluster is down")));
+            }
         }
     }
 
@@ -259,7 +264,10 @@ class DeleteTest extends VespaContainer {
             new VespaStub.Answer(200, ""),
             new VespaStub.Answer(200, "<html>proxy</html>"),
             new VespaStub.Answer(200, """
-                {"status": "ok"}""")
+                {"status": "ok"}"""),
+            new VespaStub.Answer(502, "<html>bad gateway</html>"),
+            new VespaStub.Answer(503, """
+                {"pathId": "/document/v1/", "documentCount": "2", "message": "overloaded"}""")
         );
         var expected = List.of(
             List.of("after Vespa deleted 6 documents", "Visiting failed: content node down"),
@@ -267,7 +275,9 @@ class DeleteTest extends VespaContainer {
             List.of("after Vespa deleted 4 documents", "gateway error"),
             List.of("after Vespa deleted 4 documents", "empty answer to the delete"),
             List.of("after Vespa deleted 4 documents", "delete isn't JSON"),
-            List.of("after Vespa deleted 4 documents", "delete isn't a delete result")
+            List.of("after Vespa deleted 4 documents", "delete isn't a delete result"),
+            List.of("after Vespa deleted 4 documents", "502"),
+            List.of("after Vespa deleted 4 documents", "overloaded")
         );
         for (var i = 0; i < failures.size(); i++) {
             try (var stub = VespaStub.answering(firstChunk, failures.get(i))) {
@@ -311,6 +321,20 @@ class DeleteTest extends VespaContainer {
                 .build();
 
             assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
+        }
+
+        try (var stub = VespaStub.answering(new VespaStub.Answer(500, """
+            {"pathId": "/document/v1/", "documentCount": 3, "message": "Visiting failed"}"""))) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), containsString("after Vespa deleted 3 documents"));
         }
     }
 

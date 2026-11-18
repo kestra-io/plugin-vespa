@@ -177,7 +177,7 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
         return deleted;
     }
 
-    // a last answer may carry only Vespa's error message, which the caller reports
+    // Vespa's reference: `message` is "included for all failed requests", so a last answer may carry it without a count
     private JsonNode chunk(RunContext runContext, HttpClient client, String uri) throws Exception {
         var answer = request(runContext, client, HttpRequest.builder().uri(URI.create(uri)).method("DELETE").build()).getBody();
         var json = answer(answer, "delete");
