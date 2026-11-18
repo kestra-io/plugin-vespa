@@ -29,7 +29,7 @@ java {
 }
 
 group = "io.kestra.plugin"
-description = 'Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search, read documents by their ID, and delete documents by ID or by selection.'
+description = 'Tasks that query Vespa, the search and vector engine, with YQL for text, vector and hybrid search, read documents by their ID, delete documents by ID or by selection, and feed documents in bulk.'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
@@ -49,6 +49,8 @@ dependencies {
     annotationProcessor group: "io.kestra", name: "processor", version: kestraVersion
     compileOnly group: "io.kestra", name: "core", version: kestraVersion
     compileOnly group: "io.kestra", name: "script", version: kestraVersion
+
+    implementation "com.yahoo.vespa:vespa-feed-client:8.788.13"
 }
 
 
@@ -85,11 +87,14 @@ dependencies {
 
     // test
     testImplementation "org.junit.jupiter:junit-jupiter-engine"
+    testImplementation "org.junit.jupiter:junit-jupiter-params"
     testImplementation "org.hamcrest:hamcrest"
     testImplementation "org.hamcrest:hamcrest-library"
     testImplementation "ch.qos.logback:logback-classic"
 
     testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation "org.eclipse.jetty:jetty-server"
+    testImplementation "org.eclipse.jetty.http2:jetty-http2-server"
 }
 
 /**********************************************************************************************************************\

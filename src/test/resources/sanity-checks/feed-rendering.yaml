@@ -1,0 +1,48 @@
+id: feed-rendering
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+  - id: namespace
+    type: STRING
+    defaults: mynamespace
+  - id: documentType
+    type: STRING
+    defaults: music
+
+tasks:
+  - id: write
+    type: io.kestra.plugin.core.storage.Write
+    extension: .ion
+    content: |
+      {id:"sanity-rendering-a",fields:{artist:"sanity rendering",album:"a"}}
+      {id:"sanity-rendering-b",fields:{artist:"sanity rendering",album:"b"}}
+
+  - id: feed
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    from: "{{ outputs.write.uri }}"
+    namespace: "{{ inputs.namespace }}"
+    documentType: "{{ inputs.documentType }}"
+
+  - id: get
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:{{ inputs.namespace }}:{{ inputs.documentType }}::sanity-rendering-b"
+    errorOnMissing: true
+
+  - id: remove
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    operation: REMOVE
+    from: "{{ outputs.write.uri }}"
+    namespace: "{{ inputs.namespace }}"
+    documentType: "{{ inputs.documentType }}"
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ outputs.feed.successCount == 2 }}"
+      - "{{ outputs.get.document.album == 'b' }}"
+      - "{{ outputs.remove.successCount == 2 }}"

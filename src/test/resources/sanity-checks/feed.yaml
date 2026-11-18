@@ -1,0 +1,48 @@
+id: feed
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+
+tasks:
+  - id: feed
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    from:
+      - id: "id:mynamespace:music::sanity-feed-a"
+        fields:
+          artist: "sanity feed"
+          album: "a"
+      - id: "id:mynamespace:music::sanity-feed-b"
+        fields:
+          artist: "sanity feed"
+          album: "b"
+
+  - id: get_fed
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-feed-a"
+    errorOnMissing: true
+
+  - id: remove
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    operation: REMOVE
+    from:
+      - id: "id:mynamespace:music::sanity-feed-a"
+      - id: "id:mynamespace:music::sanity-feed-b"
+
+  - id: get_removed
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-feed-b"
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ outputs.feed.successCount == 2 }}"
+      - "{{ outputs.feed.failureCount == 0 }}"
+      - "{{ outputs.get_fed.document.album == 'a' }}"
+      - "{{ outputs.remove.successCount == 2 }}"
+      - "{{ (outputs.get_removed.document ?? 'absent') == 'absent' }}"

@@ -81,7 +81,10 @@ public interface VespaConnectionInterface {
         return client.request(httpRequest, String.class);
     }
 
-    private String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
+    /**
+     * Renders the endpoint and refuses anything but an http or https base URL, before any request.
+     */
+    default String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
         var rEndpoint = runContext.render(getEndpoint()).as(String.class).orElse("");
         // a query would end up before the request path, so only scheme, host, port and an optional path prefix are allowed
         if (!rEndpoint.matches("(?i)https?://(\\[[^]]+]|[^/?#@:\\s\\[\\]]+)(:\\d+)?(/[^?#\\s]*)?")) {
