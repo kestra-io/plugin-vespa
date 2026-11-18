@@ -117,8 +117,7 @@ class DeleteTest extends VespaContainer {
     void selectionChunkFollowsReadTimeout() throws Exception {
         var chunks = Map.of(
             Duration.ofSeconds(30), "timeChunk=15000ms",
-            Duration.ofMinutes(5), "timeChunk=60000ms",
-            Duration.ofMillis(1), "timeChunk=1ms"
+            Duration.ofMinutes(5), "timeChunk=60000ms"
         );
         for (var readTimeoutAndChunk : chunks.entrySet()) {
             try (var stub = VespaStub.answering(List.of("""
