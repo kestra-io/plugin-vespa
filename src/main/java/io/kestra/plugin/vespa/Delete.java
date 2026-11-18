@@ -81,7 +81,10 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
         title = "Vespa document selection",
         description = """
             Every document it matches is removed, like `music.artist == "Miles Davis"`; `true` matches every \
-            document of the cluster. Set this or `documentId`; it needs `cluster` and `allowSelection: true`."""
+            document of the cluster except those of a global document type (`global="true"`), which a selection \
+            doesn't reach. Set this or `documentId`; it needs `cluster` and `allowSelection: true`. Vespa deletes in \
+            chunks of up to 60 seconds each, so a `readTimeout` shorter than that fails the task while Vespa keeps \
+            deleting."""
     )
     @PluginProperty(group = "main")
     private Property<String> selection;
@@ -146,18 +149,29 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
         String continuation = null;
         do {
             var uri = continuation == null ? path : path + "&continuation=" + encode(continuation);
-            var answer = request(runContext, client, HttpRequest.builder().uri(URI.create(uri)).method("DELETE").build()).getBody();
+            String answer;
+            try {
+                answer = request(runContext, client, HttpRequest.builder().uri(URI.create(uri)).method("DELETE").build()).getBody();
+            } catch (Exception e) {
+                if (deleted == 0) {
+                    throw e;
+                }
+                throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(deleted, e.getMessage()), e);
+            }
             var json = answer(answer, "delete");
             continuation = json.path("continuation").isTextual() ? json.get("continuation").asText() : null;
+            var count = json.path("documentCount");
+            if (count.isIntegralNumber()) {
+                deleted += count.asLong();
+            }
             // without a continuation, a message means the delete stopped on an error
             if (continuation == null && json.path("message").isTextual()) {
                 throw new IllegalStateException("Vespa stopped the delete by selection after %d documents: %s".formatted(deleted, json.get("message").asText()));
             }
-            if (!json.path("documentCount").isIntegralNumber()) {
+            if (!count.isIntegralNumber()) {
                 throw notAResult(answer);
             }
-            deleted += json.get("documentCount").asLong();
-            runContext.logger().info("Vespa deleted {} documents in this chunk, {} so far.", json.get("documentCount").asLong(), deleted);
+            runContext.logger().info("Vespa deleted {} documents in this chunk, {} so far.", count.asLong(), deleted);
         } while (continuation != null);
         runContext.logger().info("Vespa deleted {} documents matching the selection.", deleted);
         return deleted;

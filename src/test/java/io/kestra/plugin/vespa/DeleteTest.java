@@ -249,8 +249,9 @@ class DeleteTest extends VespaContainer {
 
     @Test
     void selectionMessage() throws Exception {
-        try (var stub = VespaStub.answering("""
-            {"pathId": "/document/v1/", "documentCount": 1, "message": "Visiting failed: content cluster is down"}""")) {
+        try (var stub = VespaStub.answering(List.of("""
+            {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}""", """
+            {"pathId": "/document/v1/", "documentCount": 2, "message": "Visiting failed: content cluster is down"}"""))) {
             var task = Delete.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .selection(Property.ofValue("true"))
@@ -260,7 +261,29 @@ class DeleteTest extends VespaContainer {
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(e.getMessage(), containsString("Visiting failed: content cluster is down"));
+            assertThat(e.getMessage(), allOf(containsString("after 6 documents"), containsString("Visiting failed: content cluster is down")));
+        }
+    }
+
+    @Test
+    void failedChunk() throws Exception {
+        try (var stub = VespaStub.answering(
+            new VespaStub.Answer(200, """
+                {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}"""),
+            new VespaStub.Answer(500, """
+                {"pathId": "/document/v1/", "message": "Internal error"}""")
+        )) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), allOf(containsString("after Vespa deleted 4 documents"), containsString("500")));
+            assertThat(e.getCause(), instanceOf(HttpClientResponseException.class));
         }
     }
 

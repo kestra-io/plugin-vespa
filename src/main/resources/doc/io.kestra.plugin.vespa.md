@@ -33,5 +33,7 @@ carries the document ID, as with `select *`. A document that doesn't exist gives
 [document selection](https://docs.vespa.ai/en/reference/document-select-language.html) matches (`selection`, like
 `music.artist == "Miles Davis"`) in the content cluster `cluster`. Set exactly one of `documentId` and `selection`. A
 delete by selection fails before sending anything unless `allowSelection: true`, since `selection: true` matches every
-document. It returns `deleted`, the number of documents removed; for a delete by ID Vespa answers the same whether the
+document, except those of a global document type (`global="true"`), which a selection doesn't reach. Vespa deletes in
+chunks of up to 60 seconds each, so keep `readTimeout` above that; a failure after the first chunk names how many
+documents were already removed. It returns `deleted`, the number of documents removed; for a delete by ID Vespa answers the same whether the
 document existed, so `deleted` is null and a mistyped ID succeeds without removing anything.
