@@ -113,14 +113,15 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
             .build();
     }
 
-    // only Vespa's own not-found answer counts: a wrong document type or another server's 404 carries no such body
+    // a wrong document type or a gateway's 404 lacks Vespa's not-found shape; the ID isn't compared, Vespa normalises it (n=01 → n=1)
     private static Optional<String> missingId(HttpClientResponseException e) {
         if (e.getResponse() == null || e.getResponse().getStatus().getCode() != 404 || !(e.getResponse().getBody() instanceof byte[] body)) {
             return Optional.empty();
         }
         try {
             var json = JacksonMapper.ofJson().readTree(body);
-            return json.path("id").isTextual() && !json.has("message") ? Optional.of(json.get("id").asText()) : Optional.empty();
+            var notFound = json.path("pathId").asText().startsWith("/document/v1/") && json.path("id").isTextual() && !json.has("message");
+            return notFound ? Optional.of(json.get("id").asText()) : Optional.empty();
         } catch (IOException notJson) {
             return Optional.empty();
         }

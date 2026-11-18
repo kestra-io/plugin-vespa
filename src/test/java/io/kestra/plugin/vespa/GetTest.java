@@ -186,7 +186,9 @@ class GetTest extends VespaContainer {
     void notFoundFromAnotherServer() throws Exception {
         for (var answer : List.of("<html>Not Found</html>", "", "{}", """
             {"id": 5}""", """
-            {"id": "id:mynamespace:music::kind-of-blue", "message": "Unknown bucket space mapping"}""")) {
+            {"id": "id:mynamespace:music::kind-of-blue", "message": "Unknown bucket space mapping"}""", """
+            {"id": "request-123", "error": "route not found"}""", """
+            {"pathId": "/api/route", "id": "id:mynamespace:music::kind-of-blue"}""")) {
             try (var stub = VespaStub.answering(404, answer)) {
                 var task = Get.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(KIND_OF_BLUE)).build();
 
