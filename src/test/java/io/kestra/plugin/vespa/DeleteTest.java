@@ -371,6 +371,22 @@ class DeleteTest extends VespaContainer {
                 assertThat(answer, e.getMessage(), allOf(containsString("delete isn't a delete result"), containsString("endpoint")));
             }
         }
+
+        try (var stub = VespaStub.answering(List.of("""
+            {"pathId": "/document/v1/", "continuation": "AAA", "message": "partial"}""", """
+            {"pathId": "/document/v1/", "documentCount": 0}"""))) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), containsString("delete isn't a delete result"));
+            assertThat(stub.seen(), hasSize(1));
+        }
     }
 
     @Test
