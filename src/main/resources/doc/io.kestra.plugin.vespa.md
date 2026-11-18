@@ -48,4 +48,5 @@ a key, completed with `namespace` and `documentType`. It returns `successCount` 
 refuses fails the task once the others are written; with `failOnError: false` the task ends in `WARNING` and `uri`
 holds the failed records, each row with the `record` as given and its `error`. Each operation gets `readTimeout`
 (5 minutes when unset); one that runs out may still have been applied by Vespa. `connectTimeout` doesn't apply to
-`Feed`.
+`Feed`, and its `endpoint` must have no path (only scheme, host and port): the feed client always sends to the
+host's root.

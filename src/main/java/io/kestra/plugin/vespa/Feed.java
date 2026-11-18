@@ -53,7 +53,8 @@ import java.util.concurrent.atomic.AtomicReference;
         answers and adapts how many operations run at once. Each record is a map with `id` and, except for `REMOVE`, \
         `fields`. Records Vespa refuses fail the task, or with `failOnError: false` end it in `WARNING` with the failed \
         records in an ION file. The feed client has its own HTTP stack: `connectTimeout` is unused (the client waits \
-        30 seconds to connect), and Kestra's allowed and denied hosts don't apply to it."""
+        30 seconds to connect), Kestra's allowed and denied hosts don't apply to it, and `endpoint` must have no path \
+        (only scheme, host and port), since the client sends to the host's root."""
 )
 @Plugin(
     metrics = {
@@ -190,6 +191,9 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         var parameters = OperationParameters.empty().timeout(runContext.render(getReadTimeout()).as(Duration.class).orElse(Duration.ofMinutes(5)));
         var rToken = runContext.render(getToken()).as(String.class).orElse("");
         var rEndpoint = endpoint(runContext);
+        if (!URI.create(rEndpoint).getRawPath().isEmpty()) {
+            throw new IllegalArgumentException("`Feed` can't send under a path, so its `endpoint` must be only scheme, host and port, like http://localhost:8080, got: '%s'.".formatted(rEndpoint));
+        }
 
         var failedFile = runContext.workingDir().createTempFile(".ion");
         var failures = new Failures(new BufferedOutputStream(Files.newOutputStream(failedFile), FileSerde.BUFFER_SIZE));
@@ -200,7 +204,7 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         killable.set(() -> Thread.ofVirtual().start(() -> client.close(false)));
         try (failures) {
             for (var record : Data.from(from).read(runContext).toIterable()) {
-                if (isKilled.get()) {
+                if (failures.writeError().isPresent()) {
                     break;
                 }
                 CompletableFuture<Result> sent;
@@ -209,15 +213,23 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
                 } catch (IllegalArgumentException invalid) {
                     failures.add(record, invalid.getMessage());
                     continue;
+                } catch (IllegalStateException closed) {
+                    if (isKilled.get()) {
+                        break;
+                    }
+                    throw closed;
                 }
                 inFlight.acquire();
                 sent.whenComplete((result, thrown) -> {
-                    if (thrown == null && result.type() == Result.Type.success) {
-                        succeeded.incrementAndGet();
-                    } else {
-                        failures.add(record, thrown == null ? result.resultMessage().orElse(result.type().name()) : error(thrown));
+                    try {
+                        if (thrown == null && result.type() == Result.Type.success) {
+                            succeeded.incrementAndGet();
+                        } else {
+                            failures.add(record, thrown == null ? result.resultMessage().orElse(result.type().name()) : error(thrown));
+                        }
+                    } finally {
+                        inFlight.release();
                     }
-                    inFlight.release();
                 });
             }
             inFlight.acquire(IN_FLIGHT);
@@ -225,9 +237,13 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
             client.close(!isKilled.get());
         }
 
+        var writeError = failures.writeError();
+        if (writeError.isPresent()) {
+            throw new IllegalStateException("Can't write the failed records to the worker's temporary file; check the worker's free disk space.", writeError.get());
+        }
         runContext.metric(Counter.of("records.succeeded", succeeded.get()));
         runContext.metric(Counter.of("records.failed", failures.count()));
-        runContext.logger().info("Vespa took {} records, {} failed.", succeeded.get(), failures.count());
+        runContext.logger().info("Feed done: {} succeeded, {} failed.", succeeded.get(), failures.count());
         if (failures.count() == 0) {
             return Output.builder().successCount(succeeded.get()).failureCount(0L).build();
         }
@@ -298,10 +314,14 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         return DocumentId.of(full);
     }
 
-    // the client sends no time limit to Vespa, so a write it gave up on may still land
+    // the client gives up when Vespa's own limit ends, so Vespa's answer can be lost while the write landed
     private static String error(Throwable thrown) {
         var cause = ExceptionUtils.getRootCause(thrown);
         var message = Optional.ofNullable(thrown.getMessage()).orElse(cause.toString());
+        var idPrefix = thrown instanceof FeedException feedException ? feedException.documentId().map(id -> "(" + id + ") ").orElse("") : "";
+        if (!idPrefix.isEmpty() && message.startsWith(idPrefix)) {
+            message = message.substring(idPrefix.length());
+        }
         return cause instanceof TimeoutException ? message + "; Vespa may still have applied it" : message;
     }
 
@@ -313,11 +333,12 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         }
     }
 
-    // the callbacks of the client's threads write here, one at a time
+    // the callbacks of the client's threads write here, one at a time; a write error is kept, not thrown on their thread
     private static final class Failures implements AutoCloseable {
         private final OutputStream file;
         private final List<String> first = new ArrayList<>();
         private long count;
+        private Exception writeError;
 
         Failures(OutputStream file) {
             this.file = file;
@@ -328,11 +349,18 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
             if (first.size() < 10) {
                 first.add("%s: %s".formatted(record.get("id"), error));
             }
+            if (writeError != null) {
+                return;
+            }
             try {
                 FileSerde.write(file, Map.of("record", record, "error", error));
             } catch (Exception e) {
-                throw new IllegalStateException("Can't write the failed record to the worker's temporary file; check the worker's free disk space.", e);
+                writeError = e;
             }
+        }
+
+        synchronized Optional<Exception> writeError() {
+            return Optional.ofNullable(writeError);
         }
 
         synchronized long count() {

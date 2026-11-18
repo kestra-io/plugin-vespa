@@ -9,6 +9,8 @@ import io.kestra.core.models.property.Property;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.core.utils.IdUtils;
+import ai.vespa.feed.client.FeedException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -27,13 +29,15 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.function.UnaryOperator;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class FeedTest extends VespaContainer {
     private static final String PATH = "/document/v1/mynamespace/music/docid/";
@@ -47,7 +51,7 @@ class FeedTest extends VespaContainer {
             record("feedtest-put-b", Map.of("artist", "feedtest put", "album", "b")),
             record("feedtest-put-c", Map.of("artist", "feedtest put", "album", "c"))
         );
-        var task = Feed.builder().endpoint(Property.ofValue(endpoint())).from(records).build();
+        var task = feed().endpoint(Property.ofValue(endpoint())).from(records).build();
         var runContext = runContextFactory.of();
 
         var output = task.run(runContext);
@@ -72,7 +76,7 @@ class FeedTest extends VespaContainer {
             record("feedtest-file-b", Map.of("artist", "feedtest file", "album", "b"))
         );
         var runContext = runContextFactory.of();
-        var task = Feed.builder().endpoint(Property.ofValue(endpoint())).from(store(runContext, records).toString()).build();
+        var task = feed().endpoint(Property.ofValue(endpoint())).from(store(runContext, records).toString()).build();
 
         var output = task.run(runContext);
 
@@ -85,7 +89,7 @@ class FeedTest extends VespaContainer {
     @Test
     void update() throws Exception {
         put(PATH + "feedtest-update", Map.of("artist", "feedtest update", "album", "before"));
-        var task = Feed.builder()
+        var task = feed()
             .endpoint(Property.ofValue(endpoint()))
             .operation(Property.ofValue(Feed.Operation.UPDATE))
             .from(List.of(Map.of("id", ID + "feedtest-update", "fields", Map.of("album", Map.of("assign", "after")))))
@@ -105,7 +109,7 @@ class FeedTest extends VespaContainer {
         for (var key : List.of("feedtest-remove-a", "feedtest-remove-b")) {
             put(PATH + key, Map.of("artist", "feedtest remove", "album", key));
         }
-        var task = Feed.builder()
+        var task = feed()
             .endpoint(Property.ofValue(endpoint()))
             .operation(Property.ofValue(Feed.Operation.REMOVE))
             .from(List.of(Map.of("id", ID + "feedtest-remove-a"), Map.of("id", ID + "feedtest-remove-b")))
@@ -120,7 +124,7 @@ class FeedTest extends VespaContainer {
 
     @Test
     void fullIdAndPlainKey() throws Exception {
-        var task = Feed.builder()
+        var task = feed()
             .endpoint(Property.ofValue(endpoint()))
             .namespace(Property.ofValue("mynamespace"))
             .documentType(Property.ofValue("music"))
@@ -158,7 +162,7 @@ class FeedTest extends VespaContainer {
     @MethodSource("invalidRecords")
     void invalidRecord(String name, Map<String, Object> invalid, Feed.Operation operation, String namespace, String documentType, String error) throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Feed.builder()
+            var task = feed()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .operation(Property.ofValue(operation))
                 .namespace(namespace == null ? null : Property.ofValue(namespace))
@@ -182,7 +186,7 @@ class FeedTest extends VespaContainer {
     @Test
     void failedRecordsAllowed() throws Exception {
         var records = badBatch("allowed");
-        var task = Feed.builder().endpoint(Property.ofValue(endpoint())).failOnError(Property.ofValue(false)).from(records).build();
+        var task = feed().endpoint(Property.ofValue(endpoint())).failOnError(Property.ofValue(false)).from(records).build();
         var runContext = runContextFactory.of();
         var logs = capture(runContext);
 
@@ -191,7 +195,7 @@ class FeedTest extends VespaContainer {
         assertThat(output.finalState().orElseThrow(), is(State.Type.WARNING));
         assertThat(output.getSuccessCount(), is(2L));
         assertThat(output.getFailureCount(), is(1L));
-        assertThat(warnings(logs), contains(allOf(containsString("2"), containsString("1"), containsString("the failed records are in `uri`"))));
+        assertThat(warnings(logs), contains("2 records were fed and 1 failed; the failed records are in `uri`."));
         var failed = stored(runContext, output.getUri());
         assertThat(failed, hasSize(1));
         assertThat(failed.getFirst().get("record"), is(records.get(1)));
@@ -205,7 +209,7 @@ class FeedTest extends VespaContainer {
     @Test
     void failedRecordsFailTheTask() throws Exception {
         var records = badBatch("refused");
-        var task = Feed.builder().endpoint(Property.ofValue(endpoint())).from(records).build();
+        var task = feed().endpoint(Property.ofValue(endpoint())).from(records).build();
 
         var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
@@ -225,7 +229,7 @@ class FeedTest extends VespaContainer {
     void manyFailuresCutTheMessage() throws Exception {
         try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(400, "{\"message\": \"%s\"}".formatted("x".repeat(300))))) {
             var records = IntStream.range(0, 20).mapToObj(i -> (Map<String, Object>) record("feedtest-many-failed-" + i, Map.of("album", "x"))).toList();
-            var task = Feed.builder().endpoint(Property.ofValue(stub.endpoint())).from(records).build();
+            var task = feed().endpoint(Property.ofValue(stub.endpoint())).from(records).build();
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
@@ -238,8 +242,8 @@ class FeedTest extends VespaContainer {
     void noRecords() throws Exception {
         try (var stub = VespaStub.start()) {
             for (var task : List.of(
-                Feed.builder().endpoint(Property.ofValue(stub.endpoint())).from(List.of()).build(),
-                Feed.builder().endpoint(Property.ofValue(stub.endpoint())).build()
+                feed().endpoint(Property.ofValue(stub.endpoint())).from(List.of()).build(),
+                feed().endpoint(Property.ofValue(stub.endpoint())).build()
             )) {
                 var output = task.run(runContextFactory.of());
 
@@ -257,19 +261,20 @@ class FeedTest extends VespaContainer {
         try (var socket = new ServerSocket(0)) {
             port = socket.getLocalPort();
         }
-        var task = Feed.builder().endpoint(Property.ofValue("http://localhost:" + port)).from(List.of(record("a", Map.of()))).build();
+        var task = feed().endpoint(Property.ofValue("http://localhost:" + port)).from(List.of(record("a", Map.of()))).build();
         var start = Instant.now();
 
         var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
         assertThat(Duration.between(start, Instant.now()), lessThan(Duration.ofSeconds(60)));
         assertThat(e.getMessage(), allOf(containsString("`endpoint`"), containsString("http://localhost:" + port)));
+        assertThat(e.getCause(), instanceOf(FeedException.class));
     }
 
     @Test
     void refusedHandshake() throws Exception {
         try (var stub = VespaStub.answering(500, "{\"message\": \"the container is starting\"}")) {
-            var task = Feed.builder().endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of()))).build();
+            var task = feed().endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of()))).build();
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
@@ -280,29 +285,56 @@ class FeedTest extends VespaContainer {
 
     static Stream<Arguments> invalidProperties() {
         return Stream.of(
-            Arguments.of("operation", (UnaryOperator<Feed.FeedBuilder<?, ?>>) b -> b.operation(Property.ofExpression("{{ 'UPSERT' }}"))),
-            Arguments.of("failOnError", (UnaryOperator<Feed.FeedBuilder<?, ?>>) b -> b.failOnError(Property.ofExpression("{{ 'maybe' }}"))),
-            Arguments.of("endpoint", (UnaryOperator<Feed.FeedBuilder<?, ?>>) b -> b.endpoint(Property.ofValue("ftp://localhost")))
+            Arguments.of("operation", "`operation`", (BiFunction<Feed.FeedBuilder<?, ?>, String, Feed.FeedBuilder<?, ?>>) (b, endpoint) -> b.operation(Property.ofExpression("{{ 'UPSERT' }}"))),
+            Arguments.of("failOnError", "`failOnError`", (BiFunction<Feed.FeedBuilder<?, ?>, String, Feed.FeedBuilder<?, ?>>) (b, endpoint) -> b.failOnError(Property.ofExpression("{{ 'maybe' }}"))),
+            Arguments.of("endpoint not http", "endpoint", (BiFunction<Feed.FeedBuilder<?, ?>, String, Feed.FeedBuilder<?, ?>>) (b, endpoint) -> b.endpoint(Property.ofValue("ftp://localhost"))),
+            Arguments.of("endpoint with a path", "`endpoint`", (BiFunction<Feed.FeedBuilder<?, ?>, String, Feed.FeedBuilder<?, ?>>) (b, endpoint) -> b.endpoint(Property.ofValue(endpoint + "/prefix")))
         );
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("invalidProperties")
-    void invalidProperty(String property, UnaryOperator<Feed.FeedBuilder<?, ?>> invalid) throws Exception {
+    void invalidProperty(String name, String property, BiFunction<Feed.FeedBuilder<?, ?>, String, Feed.FeedBuilder<?, ?>> invalid) throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = invalid.apply(Feed.builder().endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x"))))).build();
+            var task = invalid.apply(feed().endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))), stub.endpoint()).build();
 
-            var e = assertThrows(Exception.class, () -> task.run(runContextFactory.of()));
+            var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(e.getMessage(), containsStringIgnoringCase(property));
+            assertThat(e.getMessage(), containsString(property));
             assertThat(stub.seen(), is(empty()));
+        }
+    }
+
+    @Test
+    void failedRecordsFileUnwritable() throws Exception {
+        try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(400, "{\"message\": \"refused\"}"))) {
+            var unwritable = Map.<String, Object>of("id", ID + "feedtest-unwritable", "fields", Map.of("album", "x"), "extra", new Unwritable());
+            var task = feed().endpoint(Property.ofValue(stub.endpoint())).failOnError(Property.ofValue(false)).from(List.of(unwritable)).build();
+
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of())));
+
+            assertThat(e.getMessage(), containsString("temporary file"));
+            assertThat(e.getCause(), is(notNullValue()));
+        }
+    }
+
+    @Test
+    void firstTenFailures() throws Exception {
+        try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(400, "{\"message\": \"x\"}"))) {
+            var records = IntStream.range(0, 15).mapToObj(i -> (Map<String, Object>) Map.<String, Object>of("id", "id:n:t::k%02d".formatted(i), "fields", Map.of("a", "x"))).toList();
+            var task = feed().endpoint(Property.ofValue(stub.endpoint())).from(records).build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), not(containsString("...")));
+            assertThat(e.getMessage().split("id:n:t::k", -1).length - 1, is(10));
         }
     }
 
     @Test
     void bearerToken() throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Feed.builder()
+            var task = feed()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .token(Property.ofValue("feed-secret-token"))
                 .from(List.of(record("a", Map.of("album", "x")), record("b", Map.of("album", "y"))))
@@ -324,7 +356,7 @@ class FeedTest extends VespaContainer {
     void noTokenNoAuthorization() throws Exception {
         try (var stub = VespaStub.start()) {
             for (var token : Arrays.asList(Property.<String>ofValue(" "), null)) {
-                var task = Feed.builder().endpoint(Property.ofValue(stub.endpoint())).token(token).from(List.of(record("a", Map.of("album", "x")))).build();
+                var task = feed().endpoint(Property.ofValue(stub.endpoint())).token(token).from(List.of(record("a", Map.of("album", "x")))).build();
 
                 task.run(runContextFactory.of());
             }
@@ -337,12 +369,13 @@ class FeedTest extends VespaContainer {
     void killStopsTheFeed() throws Exception {
         try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)))) {
             var records = IntStream.range(0, 5000).mapToObj(i -> (Map<String, Object>) record("feedtest-kill-" + i, Map.of("album", "x"))).toList();
-            var task = Feed.builder().endpoint(Property.ofValue(stub.endpoint())).from(records).build();
+            var task = feed().endpoint(Property.ofValue(stub.endpoint())).from(records).build();
+            var ended = new AtomicReference<Exception>();
             var run = CompletableFuture.runAsync(() -> {
                 try {
                     task.run(runContextFactory.of());
-                } catch (Exception ignored) {
-                    // a killed feed may end either way; only its timing is checked
+                } catch (Exception e) {
+                    ended.set(e);
                 }
             });
             await("records in flight", Duration.ofSeconds(30), () -> {
@@ -361,13 +394,14 @@ class FeedTest extends VespaContainer {
             Thread.sleep(Duration.ofSeconds(1));
 
             assertThat(stub.seen().size(), is(seenAfterKill));
+            assertThat(String.valueOf(ended.get()), not(containsString("Client is closed")));
         }
     }
 
     @Test
     void operationTimeout() throws Exception {
         try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(5)))) {
-            var task = Feed.builder()
+            var task = feed()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .readTimeout(Property.ofValue(Duration.ofSeconds(1)))
                 .failOnError(Property.ofValue(false))
@@ -388,7 +422,7 @@ class FeedTest extends VespaContainer {
     void manyRecordsFromStoredFile() throws Exception {
         var records = IntStream.range(0, 2000).mapToObj(i -> (Map<String, Object>) record("feedtest-many-" + i, Map.of("artist", "feedtest many", "album", "a" + i))).toList();
         var runContext = runContextFactory.of();
-        var task = Feed.builder().endpoint(Property.ofValue(endpoint())).from(store(runContext, records).toString()).build();
+        var task = feed().endpoint(Property.ofValue(endpoint())).from(store(runContext, records).toString()).build();
 
         var output = task.run(runContext);
 
@@ -403,13 +437,16 @@ class FeedTest extends VespaContainer {
             .run(runContextFactory.of());
     }
 
-    // one good record, one with a field the schema doesn't have, one good record
     private static List<Map<String, Object>> badBatch(String name) {
         return List.of(
             record("feedtest-bad-" + name + "-a", Map.of("artist", "feedtest bad", "album", "a")),
             record("feedtest-bad-" + name + "-b", Map.of("artist", "feedtest bad", "nosuchfield", "b")),
             record("feedtest-bad-" + name + "-c", Map.of("artist", "feedtest bad", "album", "c"))
         );
+    }
+
+    private static Feed.FeedBuilder<?, ?> feed() {
+        return Feed.builder().id(IdUtils.create()).type(Feed.class.getName());
     }
 
     private static Map<String, Object> record(String key, Map<String, Object> fields) {
@@ -463,5 +500,12 @@ class FeedTest extends VespaContainer {
 
     private static List<String> warnings(List<ILoggingEvent> logs) {
         return logs.stream().filter(e -> e.getLevel().levelStr.equals("WARN")).map(ILoggingEvent::getFormattedMessage).toList();
+    }
+
+    // a value the failed-records file can't serialize, standing in for a write that fails
+    public static class Unwritable {
+        public String getValue() {
+            throw new IllegalStateException("cannot serialize");
+        }
     }
 }
