@@ -19,7 +19,6 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import reactor.core.publisher.Flux;
 
@@ -242,7 +241,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     private static JsonNode root(String answer) {
         var json = answer(answer, "query");
         if (!json.path("root").isObject()) {
-            throw new IllegalStateException("Vespa's answer to the query has no root; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
+            throw wrongAnswer("query has no root", answer);
         }
         return json.get("root");
     }

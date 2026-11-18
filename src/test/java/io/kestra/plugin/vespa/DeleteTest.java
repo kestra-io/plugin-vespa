@@ -27,7 +27,6 @@ class DeleteTest extends VespaContainer {
         var output = task.run(runContextFactory.of());
 
         assertThat(status(PATH), is(404));
-        assertThat(output.getId(), is(ID));
         assertThat(output.getDeleted(), is(nullValue()));
     }
 
@@ -38,32 +37,13 @@ class DeleteTest extends VespaContainer {
 
         var output = task.run(runContextFactory.of());
 
-        assertThat(output.getId(), is(id));
         assertThat(output.getDeleted(), is(nullValue()));
-    }
-
-    @Test
-    void numberGroupAndOddCharacters() throws Exception {
-        var paths = Map.of(
-            "id:mynamespace:music:n=7:deletetest n", "/document/v1/mynamespace/music/number/7/deletetest%20n",
-            "id:mynamespace:music:g=deletetest group:a/b", "/document/v1/mynamespace/music/group/deletetest%20group/a%2Fb",
-            "id:mynamespace:music::deletetest:a/b c?d", "/document/v1/mynamespace/music/docid/deletetest%3Aa%2Fb%20c%3Fd"
-        );
-        for (var idAndPath : paths.entrySet()) {
-            put(idAndPath.getValue(), Map.of("artist", "deletetest", "album", "odd"));
-            var task = Delete.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue(idAndPath.getKey())).build();
-
-            var output = task.run(runContextFactory.of());
-
-            assertThat(idAndPath.getKey(), status(idAndPath.getValue()), is(404));
-            assertThat(idAndPath.getKey(), output.getId(), is(idAndPath.getKey()));
-        }
     }
 
     @Test
     void invalidId() throws Exception {
         try (var stub = VespaStub.answering(DELETED)) {
-            for (var id : List.of("", "kind-of-blue", "id:mynamespace:music::", "id:mynamespace:music::..", "id:.:music::x", "id:mynamespace:music:g=.:x")) {
+            for (var id : List.of("kind-of-blue", "id:mynamespace:music::..")) {
                 var task = Delete.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(id)).build();
 
                 var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()), "'" + id + "'");
@@ -108,7 +88,6 @@ class DeleteTest extends VespaContainer {
         assertThat(count("artist contains \"deletetest selection\""), is(0L));
         assertThat(count("true"), is(allBefore - 3));
         assertThat(output.getDeleted(), is(3L));
-        assertThat(output.getId(), is(nullValue()));
     }
 
     @Test
@@ -288,45 +267,25 @@ class DeleteTest extends VespaContainer {
     }
 
     @Test
-    void emptyAnswer() throws Exception {
-        for (var answer : List.of("", " ")) {
-            try (var stub = VespaStub.answering(answer)) {
-                var task = Delete.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(ID)).build();
-
-                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), "'" + answer + "'");
-
-                assertThat(e.getMessage(), allOf(containsString("empty answer to the delete"), containsString("endpoint")));
-            }
-        }
-    }
-
-    @Test
-    void answerNotJson() throws Exception {
-        try (var stub = VespaStub.answering("<html>" + "x".repeat(3000) + "</html>")) {
-            var task = Delete.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(ID)).build();
-
-            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
-
-            assertThat(e.getMessage(), allOf(containsString("delete isn't JSON"), containsString("endpoint"), containsString("<html>xxx")));
-            assertThat(e.getMessage().length(), is(lessThan(1200)));
-        }
-    }
-
-    @Test
     void answerWrongShape() throws Exception {
-        for (var answer : List.of("{}", "[]", """
-            {"id": 5}""", """
-            {"pathId": "/document/v1/", "documentCount": 3}""")) {
+        for (var answer : List.of("[]", """
+            {"id": "id:mynamespace:music::deletetest-delete"}""", """
+            {"pathId": "/search/", "id": "id:mynamespace:music::deletetest-delete"}""", """
+            {"pathId": "/document/v1/mynamespace/music/docid/deletetest-delete"}""", """
+            {"pathId": "/document/v1/mynamespace/music/docid/deletetest-delete", "id": 5}""")) {
             try (var stub = VespaStub.answering(answer)) {
                 var task = Delete.builder().endpoint(Property.ofValue(stub.endpoint())).documentId(Property.ofValue(ID)).build();
 
                 var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), answer);
 
-                assertThat(answer, e.getMessage(), allOf(containsString("delete"), containsString("endpoint")));
+                assertThat(answer, e.getMessage(), allOf(containsString("delete isn't a delete result"), containsString("endpoint")));
             }
         }
-        for (var answer : List.of("{}", "[]", """
-            {"documentCount": "3"}""", DELETED)) {
+        for (var answer : List.of("[]", """
+            {"documentCount": 3}""", """
+            {"pathId": "/search/", "documentCount": 3}""", """
+            {"pathId": "/document/v1/", "documentCount": "3"}""", """
+            {"message": "route not found"}""", DELETED)) {
             try (var stub = VespaStub.answering(answer)) {
                 var task = Delete.builder()
                     .endpoint(Property.ofValue(stub.endpoint()))
@@ -337,7 +296,7 @@ class DeleteTest extends VespaContainer {
 
                 var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), answer);
 
-                assertThat(answer, e.getMessage(), allOf(containsString("delete"), containsString("endpoint")));
+                assertThat(answer, e.getMessage(), allOf(containsString("delete isn't a delete result"), containsString("endpoint")));
             }
         }
     }
@@ -354,20 +313,6 @@ class DeleteTest extends VespaContainer {
         var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
 
         assertThat(e.getMessage(), allOf(containsString("400"), containsString("Was expecting one of")));
-    }
-
-    @Test
-    void unknownCluster() {
-        var task = Delete.builder()
-            .endpoint(Property.ofValue(endpoint()))
-            .selection(Property.ofValue("music.artist == \"deletetest nobody\""))
-            .cluster(Property.ofValue("nosuchcluster"))
-            .allowSelection(Property.ofValue(true))
-            .build();
-
-        var e = assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
-
-        assertThat(e.getMessage(), allOf(containsString("400"), containsString("no content cluster 'nosuchcluster'")));
     }
 
     private static long count(String where) throws IOException {

@@ -69,7 +69,7 @@ tasks:
   - id: assert
     type: io.kestra.plugin.core.execution.Assert
     conditions:
-      - "{{ outputs.delete_by_id.id == 'id:mynamespace:music::sanity-delete-by-id' }}"
+      - "{{ (outputs.delete_by_id.deleted ?? 'null') == 'null' }}"
       - "{{ outputs.delete_by_selection.deleted == 2 }}"
       - "{{ (outputs.get_by_id.document ?? 'absent') == 'absent' }}"
       - "{{ (outputs.get_selection_a.document ?? 'absent') == 'absent' }}"

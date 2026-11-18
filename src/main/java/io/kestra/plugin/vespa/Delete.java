@@ -1,5 +1,6 @@
 package io.kestra.plugin.vespa;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
@@ -11,7 +12,6 @@ import io.kestra.core.runners.RunContext;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import org.apache.commons.lang3.StringUtils;
 
 import java.net.URI;
 
@@ -120,10 +120,10 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
             try (var client = client(runContext)) {
                 var answer = request(runContext, client, request).getBody();
                 var json = answer(answer, "delete");
-                if (!json.path("id").isTextual()) {
-                    throw notAResult(answer);
+                if (!fromDocumentApi(json) || !json.path("id").isTextual()) {
+                    throw wrongAnswer("delete isn't a delete result", answer);
                 }
-                return Output.builder().id(json.get("id").asText()).build();
+                return Output.builder().build();
             }
         }
 
@@ -159,6 +159,9 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
                 throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(deleted, e.getMessage()), e);
             }
             var json = answer(answer, "delete");
+            if (!fromDocumentApi(json)) {
+                throw wrongAnswer("delete isn't a delete result", answer);
+            }
             continuation = json.path("continuation").isTextual() ? json.get("continuation").asText() : null;
             var count = json.path("documentCount");
             if (count.isIntegralNumber()) {
@@ -169,7 +172,7 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
                 throw new IllegalStateException("Vespa stopped the delete by selection after %d documents: %s".formatted(deleted, json.get("message").asText()));
             }
             if (!count.isIntegralNumber()) {
-                throw notAResult(answer);
+                throw wrongAnswer("delete isn't a delete result", answer);
             }
             runContext.logger().info("Vespa deleted {} documents in this chunk, {} so far.", count.asLong(), deleted);
         } while (continuation != null);
@@ -177,20 +180,14 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
         return deleted;
     }
 
-    private static IllegalStateException notAResult(String answer) {
-        return new IllegalStateException("Vespa's answer to the delete isn't a delete result; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
+    // a gateway or proxy can answer 200 with its own JSON; Vespa always sends the request path back as `pathId`
+    private static boolean fromDocumentApi(JsonNode json) {
+        return json.path("pathId").asText().startsWith("/document/v1/");
     }
 
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(
-            title = "Vespa document ID",
-            description = """
-                As Vespa returns it for a delete by ID; null for a delete by selection."""
-        )
-        private String id;
-
         @Schema(
             title = "Number of documents deleted",
             description = """
