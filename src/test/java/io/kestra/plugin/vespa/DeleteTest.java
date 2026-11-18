@@ -1,5 +1,6 @@
 package io.kestra.plugin.vespa;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.property.Property;
 import org.junit.jupiter.api.Test;
@@ -246,12 +247,48 @@ class DeleteTest extends VespaContainer {
 
     @Test
     void failedChunk() throws Exception {
-        try (var stub = VespaStub.answering(
-            new VespaStub.Answer(200, """
-                {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}"""),
+        var firstChunk = new VespaStub.Answer(200, """
+            {"pathId": "/document/v1/", "documentCount": 4, "continuation": "AAA"}""");
+        var failures = List.of(
             new VespaStub.Answer(500, """
-                {"pathId": "/document/v1/", "message": "Internal error"}""")
-        )) {
+                {"pathId": "/document/v1/", "documentCount": 2, "message": "Visiting failed: content node down"}"""),
+            new VespaStub.Answer(500, """
+                {"pathId": "/document/v1/", "message": "Internal error"}"""),
+            new VespaStub.Answer(500, """
+                {"documentCount": 2, "message": "gateway error"}"""),
+            new VespaStub.Answer(200, ""),
+            new VespaStub.Answer(200, "<html>proxy</html>"),
+            new VespaStub.Answer(200, """
+                {"status": "ok"}""")
+        );
+        var expected = List.of(
+            List.of("after Vespa deleted 6 documents", "Visiting failed: content node down"),
+            List.of("after Vespa deleted 4 documents", "500"),
+            List.of("after Vespa deleted 4 documents", "gateway error"),
+            List.of("after Vespa deleted 4 documents", "empty answer to the delete"),
+            List.of("after Vespa deleted 4 documents", "delete isn't JSON"),
+            List.of("after Vespa deleted 4 documents", "delete isn't a delete result")
+        );
+        for (var i = 0; i < failures.size(); i++) {
+            try (var stub = VespaStub.answering(firstChunk, failures.get(i))) {
+                var task = Delete.builder()
+                    .endpoint(Property.ofValue(stub.endpoint()))
+                    .selection(Property.ofValue("true"))
+                    .cluster(Property.ofValue("music"))
+                    .allowSelection(Property.ofValue(true))
+                    .build();
+
+                var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), failures.get(i).body());
+
+                assertThat(failures.get(i).body(), e.getMessage(), allOf(containsString(expected.get(i).get(0)), containsString(expected.get(i).get(1))));
+                assertThat(failures.get(i).body(), e.getCause(), is(notNullValue()));
+                if (failures.get(i).status() == 500) {
+                    assertThat(e.getCause(), instanceOf(HttpClientResponseException.class));
+                }
+            }
+        }
+
+        try (var stub = VespaStub.answering(firstChunk, new VespaStub.Answer(200, "<html>proxy</html>"))) {
             var task = Delete.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
                 .selection(Property.ofValue("true"))
@@ -261,8 +298,19 @@ class DeleteTest extends VespaContainer {
 
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
-            assertThat(e.getMessage(), allOf(containsString("after Vespa deleted 4 documents"), containsString("500")));
-            assertThat(e.getCause(), instanceOf(HttpClientResponseException.class));
+            assertThat(e.getCause().getCause(), instanceOf(JsonProcessingException.class));
+        }
+
+        try (var stub = VespaStub.answering(new VespaStub.Answer(500, """
+            {"pathId": "/document/v1/", "documentCount": 0, "message": "Visiting failed"}"""))) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            assertThrows(HttpClientResponseException.class, () -> task.run(runContextFactory.of()));
         }
     }
 

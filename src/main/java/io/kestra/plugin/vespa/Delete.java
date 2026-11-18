@@ -3,16 +3,19 @@ package io.kestra.plugin.vespa;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.client.HttpClient;
+import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 
+import java.io.IOException;
 import java.net.URI;
 
 @SuperBuilder
@@ -149,18 +152,15 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
         String continuation = null;
         do {
             var uri = continuation == null ? path : path + "&continuation=" + encode(continuation);
-            String answer;
+            JsonNode json;
             try {
-                answer = request(runContext, client, HttpRequest.builder().uri(URI.create(uri)).method("DELETE").build()).getBody();
+                json = chunk(runContext, client, uri);
             } catch (Exception e) {
-                if (deleted == 0) {
+                var total = deleted + reportedCount(e);
+                if (total == 0) {
                     throw e;
                 }
-                throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(deleted, e.getMessage()), e);
-            }
-            var json = answer(answer, "delete");
-            if (!fromDocumentApi(json)) {
-                throw wrongAnswer("delete isn't a delete result", answer);
+                throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(total, e.getMessage()), e);
             }
             continuation = json.path("continuation").isTextual() ? json.get("continuation").asText() : null;
             var count = json.path("documentCount");
@@ -171,13 +171,34 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
             if (continuation == null && json.path("message").isTextual()) {
                 throw new IllegalStateException("Vespa stopped the delete by selection after %d documents: %s".formatted(deleted, json.get("message").asText()));
             }
-            if (!count.isIntegralNumber()) {
-                throw wrongAnswer("delete isn't a delete result", answer);
-            }
             runContext.logger().info("Vespa deleted {} documents in this chunk, {} so far.", count.asLong(), deleted);
         } while (continuation != null);
         runContext.logger().info("Vespa deleted {} documents matching the selection.", deleted);
         return deleted;
+    }
+
+    // a last answer may carry only Vespa's error message, which the caller reports
+    private JsonNode chunk(RunContext runContext, HttpClient client, String uri) throws Exception {
+        var answer = request(runContext, client, HttpRequest.builder().uri(URI.create(uri)).method("DELETE").build()).getBody();
+        var json = answer(answer, "delete");
+        var stopped = !json.path("continuation").isTextual() && json.path("message").isTextual();
+        if (!fromDocumentApi(json) || !(json.path("documentCount").isIntegralNumber() || stopped)) {
+            throw wrongAnswer("delete isn't a delete result", answer);
+        }
+        return json;
+    }
+
+    // Vespa answers a failed delete visit with a 500 that still counts the documents it deleted
+    private static long reportedCount(Exception e) {
+        if (!(e instanceof HttpClientResponseException failure) || failure.getResponse() == null || !(failure.getResponse().getBody() instanceof byte[] body)) {
+            return 0;
+        }
+        try {
+            var json = JacksonMapper.ofJson().readTree(body);
+            return fromDocumentApi(json) && json.path("documentCount").isIntegralNumber() ? json.get("documentCount").asLong() : 0;
+        } catch (IOException notJson) {
+            return 0;
+        }
     }
 
     // a gateway or proxy can answer 200 with its own JSON; Vespa always sends the request path back as `pathId`
