@@ -12,22 +12,31 @@ import java.util.concurrent.CopyOnWriteArrayList;
 // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect, a hand-made answer.
 record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
     static VespaStub start() throws IOException {
-        return start(Duration.ZERO, 200, null, "{}");
+        return start(Duration.ZERO, null, List.of(new Answer(200, "{}")));
     }
 
     static VespaStub answering(String body) throws IOException {
-        return start(Duration.ZERO, 200, null, body);
+        return answering(200, body);
+    }
+
+    // one answer per request in order, the last one repeated
+    static VespaStub answering(List<String> bodies) throws IOException {
+        return answering(bodies.stream().map(body -> new Answer(200, body)).toArray(Answer[]::new));
     }
 
     static VespaStub answering(int status, String body) throws IOException {
-        return start(Duration.ZERO, status, null, body);
+        return answering(new Answer(status, body));
+    }
+
+    static VespaStub answering(Answer... answers) throws IOException {
+        return start(Duration.ZERO, null, List.of(answers));
     }
 
     static VespaStub start(Duration delay, int status, String location) throws IOException {
-        return start(delay, status, location, "{}");
+        return start(delay, location, List.of(new Answer(status, "{}")));
     }
 
-    private static VespaStub start(Duration delay, int status, String location, String answer) throws IOException {
+    private static VespaStub start(Duration delay, String location, List<Answer> answers) throws IOException {
         var seen = new CopyOnWriteArrayList<Seen>();
         var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
@@ -48,8 +57,9 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
             if (location != null) {
                 exchange.getResponseHeaders().add("Location", location);
             }
-            var body = answer.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(status, body.length == 0 ? -1 : body.length);
+            var answer = answers.get(Math.min(seen.size(), answers.size()) - 1);
+            var body = answer.body().getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(answer.status(), body.length == 0 ? -1 : body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
         });
@@ -64,6 +74,9 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+    }
+
+    record Answer(int status, String body) {
     }
 
     record Seen(int clientPort, String method, String path, String query, List<String> authorization, String probeHeader, String body) {

@@ -1,0 +1,77 @@
+id: delete
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+
+tasks:
+  - id: count_before
+    type: io.kestra.plugin.vespa.Query
+    endpoint: "{{ inputs.endpoint }}"
+    yql: "select * from music where true"
+    fetchType: NONE
+
+  - id: feed_by_id
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.endpoint }}/document/v1/mynamespace/music/docid/sanity-delete-by-id"
+    method: POST
+    contentType: application/json
+    body: "{\"fields\": {\"artist\": \"sanity delete\", \"album\": \"by id\"}}"
+
+  - id: feed_selection_a
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.endpoint }}/document/v1/mynamespace/music/docid/sanity-delete-a"
+    method: POST
+    contentType: application/json
+    body: "{\"fields\": {\"artist\": \"sanity selection\", \"album\": \"a\"}}"
+
+  - id: feed_selection_b
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.endpoint }}/document/v1/mynamespace/music/docid/sanity-delete-b"
+    method: POST
+    contentType: application/json
+    body: "{\"fields\": {\"artist\": \"sanity selection\", \"album\": \"b\"}}"
+
+  - id: delete_by_id
+    type: io.kestra.plugin.vespa.Delete
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-delete-by-id"
+
+  - id: delete_by_selection
+    type: io.kestra.plugin.vespa.Delete
+    endpoint: "{{ inputs.endpoint }}"
+    selection: "music.artist == 'sanity selection'"
+    cluster: music
+    allowSelection: true
+
+  - id: get_by_id
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-delete-by-id"
+
+  - id: get_selection_a
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-delete-a"
+
+  - id: get_selection_b
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-delete-b"
+
+  - id: count_after
+    type: io.kestra.plugin.vespa.Query
+    endpoint: "{{ inputs.endpoint }}"
+    yql: "select * from music where true"
+    fetchType: NONE
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ (outputs.delete_by_id.deleted ?? 'null') == 'null' }}"
+      - "{{ outputs.delete_by_selection.deleted == 2 }}"
+      - "{{ (outputs.get_by_id.document ?? 'absent') == 'absent' }}"
+      - "{{ (outputs.get_selection_a.document ?? 'absent') == 'absent' }}"
+      - "{{ (outputs.get_selection_b.document ?? 'absent') == 'absent' }}"
+      - "{{ outputs.count_after.totalCount == outputs.count_before.totalCount }}"

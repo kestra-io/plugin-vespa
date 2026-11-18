@@ -15,7 +15,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
@@ -130,7 +129,7 @@ public class Get extends AbstractVespaTask implements RunnableTask<Get.Output> {
     private static JsonNode document(String answer) {
         var json = answer(answer, "get");
         if (!json.path("id").isTextual() || !json.path("fields").isObject()) {
-            throw new IllegalStateException("Vespa's answer to the get isn't a document; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
+            throw wrongAnswer("get isn't a document", answer);
         }
         return json;
     }

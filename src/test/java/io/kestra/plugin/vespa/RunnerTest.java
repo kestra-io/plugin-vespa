@@ -37,4 +37,13 @@ class RunnerTest extends VespaContainer {
         assertThat(execution.getTaskRunList(), hasSize(4));
         assertThat(execution.getState().getCurrent(), is(State.Type.SUCCESS));
     }
+
+    @Test
+    @LoadFlows("sanity-checks/delete.yaml")
+    void delete() throws Exception {
+        var execution = runnerUtils.runOne(MAIN_TENANT, "sanitychecks.plugin-vespa", "delete", null, (flow, e) -> Map.of("endpoint", endpoint()));
+
+        assertThat(execution.getTaskRunList(), hasSize(11));
+        assertThat(execution.getState().getCurrent(), is(State.Type.SUCCESS));
+    }
 }

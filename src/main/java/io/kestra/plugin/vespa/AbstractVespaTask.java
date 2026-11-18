@@ -63,7 +63,11 @@ public abstract class AbstractVespaTask extends Task implements VespaConnectionI
         try {
             return JacksonMapper.ofJson().readTree(body);
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Vespa's answer to the %s isn't JSON; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(operation, StringUtils.abbreviate(body, 1000)), e);
+            throw (IllegalStateException) wrongAnswer(operation + " isn't JSON", body).initCause(e);
         }
+    }
+
+    static IllegalStateException wrongAnswer(String what, String body) {
+        return new IllegalStateException("Vespa's answer to the %s; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(what, StringUtils.abbreviate(body, 1000)));
     }
 }
