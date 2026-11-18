@@ -202,8 +202,9 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         var client = client(rEndpoint, rToken);
         // the client waits up to a minute for its result threads; a kill must return at once
         killable.set(() -> Thread.ofVirtual().start(() -> client.close(false)));
-        try (failures) {
-            for (var record : Data.from(from).read(runContext).toIterable()) {
+        // closing the stream cancels the read, so an early exit doesn't leave the storage file open
+        try (failures; var records = Data.from(from).read(runContext).toStream()) {
+            for (var record : (Iterable<Map<String, Object>>) records::iterator) {
                 if (isKilled.get() || failures.writeError().isPresent()) {
                     break;
                 }

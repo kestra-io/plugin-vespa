@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -193,7 +194,7 @@ class FeedTest extends VespaContainer {
 
         var output = task.run(runContext);
 
-        assertThat(output.finalState().orElseThrow(), is(State.Type.WARNING));
+        assertThat(output.finalState().orElseThrow(() -> new AssertionError("no final state")), is(State.Type.WARNING));
         assertThat(output.getSuccessCount(), is(2L));
         assertThat(output.getFailureCount(), is(1L));
         assertThat(warnings(logs), contains("2 records were fed and 1 failed; the failed records are in `uri`."));
@@ -357,7 +358,7 @@ class FeedTest extends VespaContainer {
     }
 
     @Test
-    void failuresKeepTheFirstWriteErrorWhenTheCloseFailsToo() throws Exception {
+    void writeErrorWinsOverCloseError() throws Exception {
         var fullDisk = new OutputStream() {
             @Override
             public void write(int b) throws IOException {
@@ -374,11 +375,29 @@ class FeedTest extends VespaContainer {
         failures.add(Map.of("id", "a"), "refused");
         failures.close();
 
-        assertThat(failures.writeError().orElseThrow().getMessage(), is("No space left on device"));
+        assertThat(failures.writeError().orElseThrow(() -> new AssertionError("no write error kept")).getMessage(), is("No space left on device"));
     }
 
     @Test
-    void failuresKeepACloseError() throws Exception {
+    void onlyFirstWriteErrorKept() throws Exception {
+        var writes = new AtomicInteger();
+        var failing = new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("write " + writes.incrementAndGet());
+            }
+        };
+        var failures = new Feed.Failures(failing);
+
+        failures.add(Map.of("id", "a"), "refused");
+        failures.add(Map.of("id", "b"), "refused");
+
+        assertThat(writes.get(), is(1));
+        assertThat(failures.writeError().orElseThrow(() -> new AssertionError("no write error kept")).getMessage(), is("write 1"));
+    }
+
+    @Test
+    void closeErrorKept() throws Exception {
         var buffered = new BufferedOutputStream(new OutputStream() {
             @Override
             public void write(int b) throws IOException {
@@ -390,7 +409,7 @@ class FeedTest extends VespaContainer {
         failures.add(Map.of("id", "a"), "refused");
         failures.close();
 
-        assertThat(failures.writeError().orElseThrow().getMessage(), is("No space left on device"));
+        assertThat(failures.writeError().orElseThrow(() -> new AssertionError("no write error kept")).getMessage(), is("No space left on device"));
     }
 
     @Test
@@ -545,7 +564,7 @@ class FeedTest extends VespaContainer {
     }
 
     private static Object metric(RunContext runContext, String name) {
-        return runContext.metrics().stream().filter(m -> m.getName().equals(name)).findFirst().orElseThrow().getValue();
+        return runContext.metrics().stream().filter(m -> m.getName().equals(name)).findFirst().orElseThrow(() -> new AssertionError("no metric " + name)).getValue();
     }
 
     private static long count(String where) throws Exception {
