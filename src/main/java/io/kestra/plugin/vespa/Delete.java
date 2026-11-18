@@ -14,6 +14,7 @@ import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
+import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
@@ -160,7 +161,7 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
                 if (total == 0) {
                     throw e;
                 }
-                throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(total, e.getMessage()), e);
+                throw new IllegalStateException("The delete by selection failed after Vespa deleted %d documents: %s".formatted(total, StringUtils.abbreviate(e.getMessage(), 1000)), e);
             }
             continuation = json.path("continuation").isTextual() ? json.get("continuation").asText() : null;
             var count = json.path("documentCount");

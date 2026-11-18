@@ -298,6 +298,20 @@ class DeleteTest extends VespaContainer {
             }
         }
 
+        try (var stub = VespaStub.answering(firstChunk, new VespaStub.Answer(502, "<html>" + "x".repeat(5000) + "</html>"))) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+            assertThat(e.getMessage(), allOf(containsString("after Vespa deleted 4 documents"), containsString("502")));
+            assertThat(e.getMessage().length(), is(lessThan(1200)));
+        }
+
         try (var stub = VespaStub.answering(firstChunk, new VespaStub.Answer(200, "<html>proxy</html>"))) {
             var task = Delete.builder()
                 .endpoint(Property.ofValue(stub.endpoint()))
