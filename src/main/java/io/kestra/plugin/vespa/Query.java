@@ -13,6 +13,7 @@ import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
@@ -20,10 +21,16 @@ import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
+import reactor.core.publisher.Flux;
 
+import java.io.BufferedOutputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -41,11 +48,12 @@ import java.util.stream.Stream;
     description = """
         Runs one YQL query on the Vespa query API and returns the hits of that one answer as rows, in Vespa's own hit \
         shape: `id`, `relevance` and the document's summary fields under `fields`, read like `rows[0].fields.album`. \
-        Default `fetchType=FETCH`."""
+        With `fetchType=STORE` the rows go to an ION file in Kestra's internal storage instead, and the outputs carry its \
+        `uri`. Default `fetchType=FETCH`."""
 )
 @Plugin(
     metrics = {
-        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of rows given in the outputs")
+        @Metric(name = "records", type = Counter.TYPE, unit = "records", description = "Number of rows in the outputs or in the stored file")
     },
     examples = {
         @Example(
@@ -100,6 +108,12 @@ import java.util.stream.Stream;
     }
 )
 public class Query extends AbstractVespaTask implements RunnableTask<Query.Output> {
+    // Vespa's names and aliases for what the task properties set, lower-cased since Vespa reads names in any case
+    private static final Map<String, String> PROPERTY_NAMES = Map.of(
+        "yql", "yql", "query", "query", "model.querystring", "query", "hits", "hits", "count", "hits",
+        "offset", "offset", "start", "offset", "ranking", "ranking", "ranking.profile", "ranking", "timeout", "queryTimeout"
+    );
+
     @Schema(
         title = "YQL query",
         description = """
@@ -120,7 +134,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Schema(
         title = "Number of hits to return in one answer",
         description = """
-            Unset, Vespa returns 10 hits with `fetchType=FETCH`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
+            Unset, Vespa returns 10 hits with `fetchType=FETCH` or `STORE`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
             Vespa refuses more than 400 unless the application raises `maxHits` in its query profile."""
     )
     @PluginProperty(group = "main")
@@ -165,7 +179,8 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         title = "Result handling mode",
         description = """
             `FETCH` returns the hits of one answer as `rows` (as many as `hits`, Vespa's default 10), `FETCH_ONE` the \
-            first hit as `row`, `NONE` only `totalCount`. `STORE` is not supported yet."""
+            first hit as `row`, `STORE` writes the hits of one answer to an ION file in Kestra's internal storage and \
+            returns its `uri`, `NONE` only `totalCount`."""
     )
     @Builder.Default
     @PluginProperty(group = "processing")
@@ -174,14 +189,12 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Override
     public Output run(RunContext runContext) throws Exception {
         var rFetchType = runContext.render(fetchType).as(FetchType.class).orElse(FetchType.FETCH);
-        if (rFetchType == FetchType.STORE) {
-            throw new IllegalArgumentException("Query doesn't support fetchType STORE yet; use FETCH, FETCH_ONE or NONE.");
-        }
 
+        var body = body(runContext, rFetchType);
         var request = HttpRequest.builder()
             .uri(URI.create("/search/"))
             .method("POST")
-            .body(HttpRequest.JsonRequestBody.of(body(runContext, rFetchType)))
+            .body(HttpRequest.JsonRequestBody.of(body))
             .build();
         String answer;
         try (var client = client(runContext)) {
@@ -200,10 +213,34 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         var built = switch (rFetchType) {
             case FETCH -> output.rows(rows).size(rows.size()).build();
             case FETCH_ONE -> output.row(rows.isEmpty() ? null : rows.getFirst()).size(Math.min(rows.size(), 1)).build();
+            case STORE -> output.uri(store(runContext, rows)).size(rows.size()).build();
             default -> output.build();
         };
+        if (rFetchType == FetchType.STORE && offset(body) + rows.size() < built.getTotalCount()) {
+            runContext.logger().warn("Stored {} of {} matching hits; raise `hits` or page with `offset` to store more.", rows.size(), built.getTotalCount());
+        }
         runContext.metric(Counter.of("records", built.getSize() == null ? 0 : built.getSize()));
         return built;
+    }
+
+    private static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
+        var file = runContext.workingDir().createTempFile(".ion").toFile();
+        // one stream, not FileSerde.write per row: on Kestra 2.0 each write is a whole binary ION document (kestra-io/kestra#22557)
+        try (var output = new BufferedOutputStream(new FileOutputStream(file), FileSerde.BUFFER_SIZE)) {
+            FileSerde.writeAll(output, Flux.fromIterable(rows)).block();
+        }
+        return runContext.storage().putFile(file);
+    }
+
+    // `start` over `offset` and an empty value as 0, like Vespa; its pick when the two names differ in case isn't followed
+    private static long offset(Map<String, Object> body) {
+        var offsets = new HashMap<String, Object>();
+        body.forEach((name, value) -> {
+            if ("offset".equals(PROPERTY_NAMES.get(name.toLowerCase(Locale.ROOT)))) {
+                offsets.put(name.toLowerCase(Locale.ROOT), value);
+            }
+        });
+        return NumberUtils.toLong(String.valueOf(offsets.getOrDefault("start", offsets.get("offset"))));
     }
 
     private static JsonNode root(String answer) {
@@ -228,17 +265,12 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         runContext.render(ranking).as(String.class).ifPresent(v -> body.put("ranking.profile", v));
         runContext.render(queryTimeout).as(Duration.class).ifPresent(v -> body.put("timeout", v.toMillis() + "ms"));
 
-        // Vespa's names and aliases for what the task properties set, lower-cased since Vespa reads names in any case
-        var properties = Map.of(
-            "yql", "yql", "query", "query", "model.querystring", "query", "hits", "hits", "count", "hits",
-            "offset", "offset", "start", "offset", "ranking", "ranking", "ranking.profile", "ranking", "timeout", "queryTimeout"
-        );
-        var setByProperties = Set.copyOf(body.keySet().stream().map(properties::get).toList());
+        var setByProperties = Set.copyOf(body.keySet().stream().map(PROPERTY_NAMES::get).toList());
 
         var rParameters = runContext.render(parameters).asMap(String.class, Object.class);
         var parameterHits = false;
         for (var name : dottedNames("", rParameters).toList()) {
-            var property = properties.get(name.toLowerCase(Locale.ROOT));
+            var property = PROPERTY_NAMES.get(name.toLowerCase(Locale.ROOT));
             if (property != null && setByProperties.contains(property)) {
                 throw new IllegalArgumentException("The parameter '%s' is also set by the task property '%s'; set it in one place only.".formatted(name, property));
             }
@@ -247,7 +279,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         body.putAll(rParameters);
 
         // no summaries built for hits the outputs would throw away
-        if (!body.containsKey("hits") && !parameterHits && rFetchType != FetchType.FETCH) {
+        if (!body.containsKey("hits") && !parameterHits && (rFetchType == FetchType.FETCH_ONE || rFetchType == FetchType.NONE)) {
             body.put("hits", rFetchType == FetchType.FETCH_ONE ? 1 : 0);
         }
         return body;
@@ -283,7 +315,8 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         @Schema(
             title = "Hits as rows",
             description = """
-                Only with `fetchType=FETCH`. Each row holds `id`, `relevance` and the document under `fields`."""
+                Only with `fetchType=FETCH`; with `STORE` the rows are in the file at `uri`. Each row holds `id`, \
+                `relevance` and the document under `fields`."""
         )
         private List<Map<String, Object>> rows;
 
@@ -295,7 +328,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         private Map<String, Object> row;
 
         @Schema(
-            title = "Number of rows in the outputs",
+            title = "Number of rows in the outputs or in the stored file",
             description = """
                 Null with `fetchType=NONE`."""
         )
@@ -307,5 +340,13 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
                 Vespa's `totalCount`, which can be larger than the hits returned."""
         )
         private Long totalCount;
+
+        @Schema(
+            title = "URI of the file with the hits",
+            description = """
+                Only with `fetchType=STORE`: an ION file in Kestra's internal storage, one record per hit, each with `id`, \
+                `relevance` and the document under `fields`."""
+        )
+        private URI uri;
     }
 }

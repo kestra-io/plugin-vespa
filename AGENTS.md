@@ -3,7 +3,7 @@
 ## What
 
 - Provides plugin components under `io.kestra.plugin.vespa`.
-- Includes the `Query` task, which runs one YQL query on the Vespa query API and returns the hits as rows.
+- Includes the `Query` task, which runs one YQL query on the Vespa query API and returns the hits as rows, or writes them to an ION file in Kestra's internal storage with `fetchType: STORE`.
 - The connection (`endpoint`, `token`, timeouts) lives in `VespaConnectionInterface` and `AbstractVespaTask`, shared by the tasks.
 
 ## Why

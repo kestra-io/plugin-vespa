@@ -17,6 +17,7 @@ profile), `queryTimeout` (Vespa's own time limit) and `parameters` for any other
 tensor `input.query(q)`. A parameter that a task property also sets fails the task, so each value has one place.
 
 Rows keep Vespa's hit shape: `id`, `relevance` and the document under `fields`, read like
-`{{ outputs.search.rows[0].fields.album }}`. `fetchType` picks `FETCH` (rows, default), `FETCH_ONE` (first row) or
-`NONE` (only `totalCount`). Vespa returns 10 hits by default and refuses more than 400 hits or an offset over 1000
+`{{ outputs.search.rows[0].fields.album }}`. `fetchType` picks `FETCH` (rows, default), `FETCH_ONE` (first row),
+`STORE` (the rows in an ION file in Kestra's internal storage, returned as `uri`, for the next task to read) or `NONE`
+(only `totalCount`). Vespa returns 10 hits by default and refuses more than 400 hits or an offset over 1000
 unless the application raises its limits.
