@@ -34,6 +34,7 @@ carries the document ID, as with `select *`. A document that doesn't exist gives
 `music.artist == "Miles Davis"`) in the content cluster `cluster`. Set exactly one of `documentId` and `selection`. A
 delete by selection fails before sending anything unless `allowSelection: true`, since `selection: true` matches every
 document, except those of a global document type (`global="true"`), which a selection doesn't reach. Vespa deletes in
-chunks of up to 60 seconds each, so keep `readTimeout` above that; once Vespa has deleted documents, a failure names
-how many were already removed. It returns `deleted`, the number of documents removed; for a delete by ID Vespa answers
-the same whether the document existed, so `deleted` is null and a mistyped ID succeeds without removing anything.
+chunks of up to 60 seconds each; with `readTimeout` set, each chunk is kept to half of it. Once Vespa has deleted
+documents, a failure names how many were already removed. It returns `deleted`, the number of documents removed; for
+a delete by ID Vespa answers the same whether the document existed, so `deleted` is null and a mistyped ID succeeds
+without removing anything.

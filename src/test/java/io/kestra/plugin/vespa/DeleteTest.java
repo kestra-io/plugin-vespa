@@ -6,6 +6,7 @@ import io.kestra.core.models.property.Property;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +90,67 @@ class DeleteTest extends VespaContainer {
         assertThat(count("artist contains \"deletetest selection\""), is(0L));
         assertThat(count("true"), is(allBefore - 3));
         assertThat(output.getDeleted(), is(3L));
+    }
+
+    @Test
+    void selectionWithShortReadTimeout() throws Exception {
+        for (var key : List.of("a", "b")) {
+            put("/document/v1/mynamespace/music/docid/deletetest-short-" + key, Map.of("artist", "deletetest short", "album", key));
+        }
+        var allBefore = count("true");
+        var task = Delete.builder()
+            .endpoint(Property.ofValue(endpoint()))
+            .readTimeout(Property.ofValue(Duration.ofSeconds(2)))
+            .selection(Property.ofValue("music.artist == \"deletetest short\""))
+            .cluster(Property.ofValue("music"))
+            .allowSelection(Property.ofValue(true))
+            .build();
+
+        var output = task.run(runContextFactory.of());
+
+        assertThat(count("artist contains \"deletetest short\""), is(0L));
+        assertThat(count("true"), is(allBefore - 2));
+        assertThat(output.getDeleted(), is(2L));
+    }
+
+    @Test
+    void selectionChunkFollowsReadTimeout() throws Exception {
+        var chunks = Map.of(
+            Duration.ofSeconds(30), "timeChunk=15000ms",
+            Duration.ofMinutes(5), "timeChunk=60000ms",
+            Duration.ofMillis(1), "timeChunk=1ms"
+        );
+        for (var readTimeoutAndChunk : chunks.entrySet()) {
+            try (var stub = VespaStub.answering(List.of("""
+                {"pathId": "/document/v1/", "documentCount": 1, "continuation": "AAA"}""", """
+                {"pathId": "/document/v1/", "documentCount": 1}"""))) {
+                var task = Delete.builder()
+                    .endpoint(Property.ofValue(stub.endpoint()))
+                    .readTimeout(Property.ofValue(readTimeoutAndChunk.getKey()))
+                    .selection(Property.ofValue("true"))
+                    .cluster(Property.ofValue("music"))
+                    .allowSelection(Property.ofValue(true))
+                    .build();
+
+                task.run(runContextFactory.of());
+
+                assertThat(stub.seen(), hasSize(2));
+                assertThat(readTimeoutAndChunk.getValue(), stub.seen().stream().map(VespaStub.Seen::query).toList(), everyItem(containsString("&" + readTimeoutAndChunk.getValue())));
+            }
+        }
+        try (var stub = VespaStub.answering("""
+            {"pathId": "/document/v1/", "documentCount": 1}""")) {
+            var task = Delete.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .selection(Property.ofValue("true"))
+                .cluster(Property.ofValue("music"))
+                .allowSelection(Property.ofValue(true))
+                .build();
+
+            task.run(runContextFactory.of());
+
+            assertThat(stub.seen().getFirst().query(), not(containsString("timeChunk")));
+        }
     }
 
     @Test
@@ -290,7 +352,7 @@ class DeleteTest extends VespaContainer {
 
                 var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()), failures.get(i).body());
 
-                assertThat(failures.get(i).body(), e.getMessage(), allOf(containsString(expected.get(i).get(0)), containsString(expected.get(i).get(1))));
+                assertThat(failures.get(i).body(), e.getMessage(), allOf(containsString(expected.get(i).getFirst()), containsString(expected.get(i).get(1))));
                 assertThat(failures.get(i).body(), e.getCause(), is(notNullValue()));
                 if (failures.get(i).status() == 500) {
                     assertThat(e.getCause(), instanceOf(HttpClientResponseException.class));

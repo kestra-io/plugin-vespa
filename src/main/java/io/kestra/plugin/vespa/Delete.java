@@ -18,6 +18,7 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
 
 @SuperBuilder
 @ToString
@@ -87,8 +88,7 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
             Every document it matches is removed, like `music.artist == "Miles Davis"`; `true` matches every \
             document of the cluster except those of a global document type (`global="true"`), which a selection \
             doesn't reach. Set this or `documentId`; it needs `cluster` and `allowSelection: true`. Vespa deletes in \
-            chunks of up to 60 seconds each, so a `readTimeout` shorter than that fails the task while Vespa keeps \
-            deleting."""
+            chunks of up to 60 seconds each; with `readTimeout` set, each chunk is kept to half of it."""
     )
     @PluginProperty(group = "main")
     private Property<String> selection;
@@ -148,7 +148,11 @@ public class Delete extends AbstractVespaTask implements RunnableTask<Delete.Out
 
     // Vespa deletes in chunks and answers each with a continuation token until the last one
     private long deleteBySelection(RunContext runContext, HttpClient client, String rSelection, String rCluster) throws Exception {
-        var path = "/document/v1/?cluster=" + encode(rCluster) + "&selection=" + encode(rSelection);
+        // Vespa answers a chunk only when it ends, so a chunk longer than the read timeout is cut while Vespa keeps deleting
+        var timeChunk = runContext.render(getReadTimeout()).as(Duration.class)
+            .map(rReadTimeout -> "&timeChunk=" + Math.clamp(rReadTimeout.toMillis() / 2, 1, 60_000) + "ms")
+            .orElse("");
+        var path = "/document/v1/?cluster=" + encode(rCluster) + "&selection=" + encode(rSelection) + timeChunk;
         var deleted = 0L;
         String continuation = null;
         do {
