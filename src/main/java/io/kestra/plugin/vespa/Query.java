@@ -1,6 +1,5 @@
 package io.kestra.plugin.vespa;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.kestra.core.http.HttpRequest;
@@ -200,9 +199,6 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         try (var client = client(runContext)) {
             answer = request(runContext, client, request).getBody();
         }
-        if (answer == null || answer.isBlank()) {
-            throw new IllegalStateException("Vespa sent an empty answer to the query; check that `endpoint` is the URL of the Vespa container cluster.");
-        }
 
         var root = root(answer);
         // degraded coverage (like a soft timeout) still returns usable hits, so Vespa's errors are shown, not thrown
@@ -244,12 +240,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     }
 
     private static JsonNode root(String answer) {
-        JsonNode json;
-        try {
-            json = JacksonMapper.ofJson().readTree(answer);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Vespa's answer to the query isn't JSON; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)), e);
-        }
+        var json = answer(answer, "query");
         if (!json.path("root").isObject()) {
             throw new IllegalStateException("Vespa's answer to the query has no root; check that `endpoint` is the URL of the Vespa container cluster. Answer: %s".formatted(StringUtils.abbreviate(answer, 1000)));
         }

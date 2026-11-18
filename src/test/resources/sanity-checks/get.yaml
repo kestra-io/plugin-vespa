@@ -1,0 +1,32 @@
+id: get
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+
+tasks:
+  - id: first_jazz
+    type: io.kestra.plugin.vespa.Query
+    endpoint: "{{ inputs.endpoint }}"
+    yql: "select * from music where genre contains \"jazz\" order by year asc, added_at asc"
+    fetchType: FETCH_ONE
+
+  - id: get
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "{{ outputs.first_jazz.row.id }}"
+    errorOnMissing: true
+
+  - id: missing
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::not-in-the-catalog"
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ outputs.get.id == outputs.first_jazz.row.id }}"
+      - "{{ outputs.get.document.album == 'Kind of Blue' }}"
+      - "{{ outputs.missing.id == 'id:mynamespace:music::not-in-the-catalog' }}"
+      - "{{ (outputs.missing.document ?? 'absent') == 'absent' }}"

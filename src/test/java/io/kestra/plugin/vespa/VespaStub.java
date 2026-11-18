@@ -19,6 +19,10 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
         return start(Duration.ZERO, 200, null, body);
     }
 
+    static VespaStub answering(int status, String body) throws IOException {
+        return start(Duration.ZERO, status, null, body);
+    }
+
     static VespaStub start(Duration delay, int status, String location) throws IOException {
         return start(delay, status, location, "{}");
     }
@@ -30,7 +34,8 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
             seen.add(new Seen(
                 exchange.getRemoteAddress().getPort(),
                 exchange.getRequestMethod(),
-                exchange.getRequestURI().getPath(),
+                exchange.getRequestURI().getRawPath(),
+                exchange.getRequestURI().getRawQuery(),
                 exchange.getRequestHeaders().get("Authorization"),
                 exchange.getRequestHeaders().getFirst("X-Probe"),
                 new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)
@@ -61,6 +66,6 @@ record VespaStub(HttpServer server, List<Seen> seen) implements AutoCloseable {
         server.stop(0);
     }
 
-    record Seen(int clientPort, String method, String path, List<String> authorization, String probeHeader, String body) {
+    record Seen(int clientPort, String method, String path, String query, List<String> authorization, String probeHeader, String body) {
     }
 }

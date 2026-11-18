@@ -118,6 +118,15 @@ public class VespaContainer {
         return MAPPER.readTree(response.body());
     }
 
+    /** Vespa's own answer to a document GET on {@code path}, sent without the plugin: the expected side of the get tests. */
+    static JsonNode document(String path) throws IOException {
+        var response = send(get(url(8080) + path));
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Vespa refused the get with status %d: %s".formatted(response.statusCode(), response.body()));
+        }
+        return MAPPER.readTree(response.body());
+    }
+
     private static String url(int containerPort) {
         return "http://" + VESPA.getHost() + ":" + VESPA.getMappedPort(containerPort);
     }
