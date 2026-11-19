@@ -53,3 +53,10 @@ holds the failed records, each row with the `record` as given and its `error`. E
 host's root. Before feeding, `Feed` sends one `HEAD /state/v1/health` through Kestra's HTTP client, so
 Kestra's allowed and denied hosts (`kestra.tasks.http.allowed-list` and `denied-list`, from Kestra 2.0) apply to it
 too.
+
+`createIfNotExists: true` turns an `UPDATE` of a missing document into an upsert. `condition` is Vespa's
+[test-and-set](https://docs.vespa.ai/en/writing/document-v1-api-guide.html#conditional-writes) condition, like
+`music.year==2000`: a record whose document doesn't match, or doesn't exist, is a failed record. With both, a missing
+document is written without checking the condition; Vespa also writes it when every replica of an existing document
+is unreachable ([Vespa's warning](https://docs.vespa.ai/en/writing/document-v1-api-guide.html#conditional-updates-and-puts-with-create)).
+`maxInFlight` (1 to 4096, default 4096) caps the records waiting for Vespa's answer, to put less load on Vespa.

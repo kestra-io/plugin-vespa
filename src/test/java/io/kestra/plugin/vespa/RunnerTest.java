@@ -57,6 +57,16 @@ class RunnerTest extends VespaContainer {
     }
 
     @Test
+    @LoadFlows("sanity-checks/feed-options.yaml")
+    void feedOptions() throws Exception {
+        var execution = runnerUtils.runOne(MAIN_TENANT, "sanitychecks.plugin-vespa", "feed-options", null, (flow, e) -> Map.of("endpoint", endpoint()));
+
+        assertThat(execution.getTaskRunList(), hasSize(6));
+        assertThat(execution.getTaskRunList().stream().filter(t -> t.getTaskId().equals("conditional")).findFirst().orElseThrow(() -> new AssertionError("no conditional task run")).getState().getCurrent(), is(State.Type.WARNING));
+        assertThat(execution.getState().getCurrent(), is(State.Type.WARNING));
+    }
+
+    @Test
     @LoadFlows("sanity-checks/feed-rendering.yaml")
     void feedRendering() throws Exception {
         var execution = runnerUtils.runOne(MAIN_TENANT, "sanitychecks.plugin-vespa", "feed-rendering", null, (flow, e) -> Map.of("endpoint", endpoint()));
