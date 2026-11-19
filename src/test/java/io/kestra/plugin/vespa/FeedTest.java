@@ -11,10 +11,10 @@ import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
-import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.utils.IdUtils;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -45,6 +45,8 @@ import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+// a broken slot count blocks `run()` forever; fail the test instead of hanging the build
+@Timeout(60)
 class FeedTest extends VespaContainer {
     private static final String PATH = "/document/v1/mynamespace/music/docid/";
     private static final String ID = "id:mynamespace:music::";
@@ -588,6 +590,35 @@ class FeedTest extends VespaContainer {
     }
 
     @Test
+    void killWhileWaitingForASlot() throws Exception {
+        try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)))) {
+            var records = IntStream.range(0, 50).mapToObj(i -> (Map<String, Object>) record("feedtest-kill-slot-" + i, Map.of("album", "x"))).toList();
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).maxInFlight(Property.ofValue(1)).from(records).build();
+            var run = CompletableFuture.runAsync(() -> {
+                try {
+                    task.run(runContextFactory.of());
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            await("one record in flight", Duration.ofSeconds(30), () -> {
+                if (stub.seen().size() < 2) {
+                    throw new IllegalStateException("no record sent yet");
+                }
+                return null;
+            });
+
+            task.kill();
+            run.handle((ok, thrown) -> null).get(10, TimeUnit.SECONDS);
+            var seenAfterKill = stub.seen().size();
+            Thread.sleep(Duration.ofSeconds(1));
+
+            assertThat(stub.seen().size(), is(seenAfterKill));
+            assertThat(seenAfterKill, is(2));
+        }
+    }
+
+    @Test
     void operationTimeout() throws Exception {
         try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(5)))) {
             var task = Feed.builder().id(IdUtils.create())
@@ -645,19 +676,24 @@ class FeedTest extends VespaContainer {
 
     @Test
     void updateOfMissingDocumentWritesNothing() throws Exception {
-        for (var createIfNotExists : Arrays.asList(null, Property.ofValue(false))) {
-            var task = Feed.builder().id(IdUtils.create())
-                .endpoint(Property.ofValue(endpoint()))
-                .operation(Property.ofValue(Feed.Operation.UPDATE))
-                .createIfNotExists(createIfNotExists)
-                .from(List.of(Map.of("id", ID + "feedtest-no-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
-                .build();
+        var unset = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .from(List.of(Map.of("id", ID + "feedtest-no-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
+            .build();
+        var setFalse = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .createIfNotExists(Property.ofValue(false))
+            .from(List.of(Map.of("id", ID + "feedtest-no-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
+            .build();
 
-            var output = task.run(runContextFactory.of());
+        var unsetOutput = unset.run(runContextFactory.of());
+        var setFalseOutput = setFalse.run(runContextFactory.of());
 
-            assertThat(String.valueOf(createIfNotExists), output.getSuccessCount(), is(1L));
-            assertThat(String.valueOf(createIfNotExists), status(PATH + "feedtest-no-upsert"), is(404));
-        }
+        assertThat(unsetOutput.getSuccessCount(), is(1L));
+        assertThat(setFalseOutput.getSuccessCount(), is(1L));
+        assertThat(status(PATH + "feedtest-no-upsert"), is(404));
     }
 
     static Stream<Arguments> conditionMetCases() {
