@@ -125,7 +125,9 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         title = Data.From.TITLE,
         description = Data.From.DESCRIPTION + """
 
-            Each record is a map with `id` and `fields`; `REMOVE` needs only `id`, and other keys are ignored.""",
+            Each record is a map with `id` and `fields`; `REMOVE` needs only `id`, and other keys are ignored. Kestra \
+            reads a `kestra://` file whole into memory before the first record is sent, so split very large files \
+            across several runs.""",
         anyOf = {String.class, List.class, Map.class}
     )
     @PluginProperty(dynamic = true, group = "main")
