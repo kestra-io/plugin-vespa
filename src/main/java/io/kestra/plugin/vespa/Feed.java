@@ -30,6 +30,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 
 import java.io.BufferedOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
@@ -58,7 +59,7 @@ import java.util.concurrent.atomic.AtomicReference;
         `fields`. Records Vespa refuses fail the task, or with `failOnError: false` end it in `WARNING` with the failed \
         records in an ION file. The feed client has its own HTTP stack: `connectTimeout` is unused (the client waits \
         30 seconds to connect), and `endpoint` must have no path (only scheme, host and port), since the client sends \
-        to the host's root. Before feeding, `Feed` sends one request to `/state/v1/health` through Kestra's HTTP \
+        to the host's root. Before feeding, `Feed` sends one `HEAD /state/v1/health` through Kestra's HTTP \
         client, so Kestra's allowed and denied hosts apply to it too."""
 )
 @Plugin(
@@ -289,7 +290,28 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
             .readIdleTimeout(Property.ofValue(Duration.ofSeconds(5)))
             .build();
         try (var client = client(runContext, timeout)) {
-            request(runContext, client, HttpRequest.builder().uri(URI.create("/state/v1/health")).method("GET").build());
+            Runnable close = () -> {
+                try {
+                    client.close();
+                } catch (IOException ignored) {
+                    // the request it ends fails, which is all that's needed
+                }
+            };
+            // core limits only the connection and each read, so a slow answer would hold the run without end
+            var deadline = Thread.ofVirtual().start(() -> {
+                try {
+                    Thread.sleep(Duration.ofSeconds(10));
+                    close.run();
+                } catch (InterruptedException done) {
+                    // the request ended in time
+                }
+            });
+            killable.set(() -> Thread.ofVirtual().start(close));
+            try {
+                request(runContext, client, HttpRequest.builder().uri(URI.create("/state/v1/health")).method("HEAD").build());
+            } finally {
+                deadline.interrupt();
+            }
         } catch (IllegalArgumentException refused) {
             throw refused;
         } catch (Exception ignored) {

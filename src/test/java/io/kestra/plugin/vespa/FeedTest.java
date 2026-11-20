@@ -306,7 +306,7 @@ class FeedTest extends VespaContainer {
             var output = task.run(runContextFactory.of());
 
             assertThat(output.getSuccessCount(), is(1L));
-            assertThat(stub.seen().getFirst().method(), is("GET"));
+            assertThat(stub.seen().getFirst().method(), is("HEAD"));
             assertThat(stub.seen().getFirst().path(), is("/state/v1/health"));
             assertThat(stub.seen().stream().filter(FeedTest::preflight).toList(), hasSize(1));
             assertThat(handshake(stub.seen().get(1)), is(true));
@@ -322,22 +322,23 @@ class FeedTest extends VespaContainer {
     }
 
     @Test
-    void preflightSilentEndpoint() throws Exception {
-        try (var stub = VespaStub.withHealth(new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)), new VespaStub.Answer(200, "{}"))) {
-            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+    void preflightSlowEndpoint() throws Exception {
+        try (var stub = VespaStub.start(); var proxy = new SlowHealthProxy(stub.endpoint())) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(proxy.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
             var start = Instant.now();
 
             var output = task.run(runContextFactory.of());
 
-            assertThat(Duration.between(start, Instant.now()), lessThan(Duration.ofSeconds(30)));
+            assertThat(Duration.between(start, Instant.now()), lessThan(Duration.ofSeconds(15)));
+            assertThat(proxy.healthSeen(), is(true));
             assertThat(output.getSuccessCount(), is(1L));
         }
     }
 
     @Test
     void killDuringPreflight() throws Exception {
-        try (var stub = VespaStub.withHealth(new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)), new VespaStub.Answer(200, "{}"))) {
-            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+        try (var stub = VespaStub.start(); var proxy = new SlowHealthProxy(stub.endpoint())) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(proxy.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
             var run = CompletableFuture.supplyAsync(() -> {
                 try {
                     return task.run(runContextFactory.of());
@@ -346,19 +347,21 @@ class FeedTest extends VespaContainer {
                 }
             });
             await("health request held", Duration.ofSeconds(30), () -> {
-                if (stub.seen().isEmpty()) {
+                if (!proxy.healthSeen()) {
                     throw new IllegalStateException("no health request yet");
                 }
                 return null;
             });
+            Thread.sleep(Duration.ofSeconds(3));
             var killStart = Instant.now();
 
             task.kill();
-            var output = run.get(15, TimeUnit.SECONDS);
+            var output = run.get(5, TimeUnit.SECONDS);
 
-            assertThat(Duration.between(killStart, Instant.now()), lessThan(Duration.ofSeconds(15)));
+            assertThat(Duration.between(killStart, Instant.now()), lessThan(Duration.ofSeconds(5)));
             assertThat(output.getSuccessCount(), is(0L));
-            assertThat(stub.seen().stream().filter(s -> !preflight(s)).toList(), is(empty()));
+            assertThat(output.getFailureCount(), is(0L));
+            assertThat(stub.seen(), is(empty()));
         }
     }
 

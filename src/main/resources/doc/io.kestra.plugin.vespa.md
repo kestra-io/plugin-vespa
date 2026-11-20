@@ -50,6 +50,6 @@ refuses fails the task once the others are written; with `failOnError: false` th
 holds the failed records, each row with the `record` as given and its `error`. Each operation gets `readTimeout`
 (5 minutes when unset); one that runs out may still have been applied by Vespa. `connectTimeout` doesn't apply to
 `Feed`, and its `endpoint` must have no path (only scheme, host and port): the feed client always sends to the
-host's root. Before feeding, `Feed` sends one request to `/state/v1/health` through Kestra's HTTP client, so
+host's root. Before feeding, `Feed` sends one `HEAD /state/v1/health` through Kestra's HTTP client, so
 Kestra's allowed and denied hosts (`kestra.tasks.http.allowed-list` and `denied-list`, from Kestra 2.0) apply to it
 too.
