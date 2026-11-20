@@ -307,6 +307,11 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
                 }
             });
             killable.set(() -> Thread.ofVirtual().start(close));
+            // a kill that came before the line above found nothing to close
+            if (isKilled.get()) {
+                deadline.interrupt();
+                return;
+            }
             try {
                 request(runContext, client, HttpRequest.builder().uri(URI.create("/state/v1/health")).method("HEAD").build());
             } finally {

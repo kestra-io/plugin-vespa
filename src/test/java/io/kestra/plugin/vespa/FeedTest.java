@@ -365,6 +365,22 @@ class FeedTest extends VespaContainer {
         }
     }
 
+    @Test
+    void killBeforeRun() throws Exception {
+        try (var stub = VespaStub.start()) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+            task.kill();
+            var start = Instant.now();
+
+            var output = task.run(runContextFactory.of());
+
+            assertThat(Duration.between(start, Instant.now()), lessThan(Duration.ofSeconds(5)));
+            assertThat(output.getSuccessCount(), is(0L));
+            assertThat(output.getFailureCount(), is(0L));
+            assertThat(stub.seen(), is(empty()));
+        }
+    }
+
     // the endpoint column is a format: %s is the stub's endpoint
     static Stream<Arguments> invalidProperties() {
         return Stream.of(
