@@ -16,12 +16,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect, a hand-made answer.
 // HTTP/1.1 for Kestra's HTTP client and HTTP/2 without TLS for Vespa's feed client, on one port.
 record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
+    private static final String HEALTH = "/state/v1/health";
+    private static final Answer HEALTHY = new Answer(200, "{}");
+
     static VespaStub start() throws Exception {
-        return start(Duration.ZERO, null, List.of(new Answer(200, "{}")));
+        return start(Duration.ZERO, null, HEALTHY, List.of(new Answer(200, "{}")));
     }
 
     static VespaStub answering(String body) throws Exception {
@@ -38,15 +42,21 @@ record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
     }
 
     static VespaStub answering(Answer... answers) throws Exception {
-        return start(Duration.ZERO, null, List.of(answers));
+        return start(Duration.ZERO, null, HEALTHY, List.of(answers));
+    }
+
+    // `Feed` checks the health path before it feeds; its answer is kept out of the ordered answers so they still start at the handshake
+    static VespaStub withHealth(Answer health, Answer... answers) throws Exception {
+        return start(Duration.ZERO, null, health, List.of(answers));
     }
 
     static VespaStub start(Duration delay, int status, String location) throws Exception {
-        return start(delay, location, List.of(new Answer(status, "{}")));
+        return start(delay, location, HEALTHY, List.of(new Answer(status, "{}")));
     }
 
-    private static VespaStub start(Duration delay, String location, List<Answer> answers) throws Exception {
+    private static VespaStub start(Duration delay, String location, Answer health, List<Answer> answers) throws Exception {
         var seen = new CopyOnWriteArrayList<Seen>();
+        var answered = new AtomicInteger();
         var server = new Server();
         // Vespa takes an encoded `/` in a document ID, which Jetty refuses by default
         var configuration = new HttpConfiguration();
@@ -67,7 +77,7 @@ record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
                     request.getHeaders().get("X-Probe"),
                     Content.Source.asString(request, StandardCharsets.UTF_8)
                 ));
-                var answer = answers.get(Math.min(seen.size(), answers.size()) - 1);
+                var answer = HEALTH.equals(request.getHttpURI().getPath()) ? health : answers.get(Math.min(answered.incrementAndGet(), answers.size()) - 1);
                 try {
                     Thread.sleep(delay.plus(answer.delay()));
                 } catch (InterruptedException e) {

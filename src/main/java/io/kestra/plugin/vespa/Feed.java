@@ -6,6 +6,9 @@ import ai.vespa.feed.client.FeedClientBuilder;
 import ai.vespa.feed.client.FeedException;
 import ai.vespa.feed.client.OperationParameters;
 import ai.vespa.feed.client.Result;
+import io.kestra.core.exceptions.IllegalVariableEvaluationException;
+import io.kestra.core.http.HttpRequest;
+import io.kestra.core.http.client.configurations.TimeoutConfiguration;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Metric;
 import io.kestra.core.models.annotations.Plugin;
@@ -20,6 +23,7 @@ import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.Rethrow;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 import org.apache.commons.lang3.StringUtils;
@@ -53,8 +57,9 @@ import java.util.concurrent.atomic.AtomicReference;
         answers and adapts how many operations run at once. Each record is a map with `id` and, except for `REMOVE`, \
         `fields`. Records Vespa refuses fail the task, or with `failOnError: false` end it in `WARNING` with the failed \
         records in an ION file. The feed client has its own HTTP stack: `connectTimeout` is unused (the client waits \
-        30 seconds to connect), Kestra's allowed and denied hosts don't apply to it, and `endpoint` must have no path \
-        (only scheme, host and port), since the client sends to the host's root."""
+        30 seconds to connect), and `endpoint` must have no path (only scheme, host and port), since the client sends \
+        to the host's root. Before feeding, `Feed` sends one request to `/state/v1/health` through Kestra's HTTP \
+        client, so Kestra's allowed and denied hosts apply to it too."""
 )
 @Plugin(
     metrics = {
@@ -130,6 +135,7 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
             across several runs.""",
         anyOf = {String.class, List.class, Map.class}
     )
+    @NotNull
     @PluginProperty(dynamic = true, group = "main")
     private Object from;
 
@@ -195,6 +201,11 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         var rEndpoint = endpoint(runContext);
         if (!URI.create(rEndpoint).getRawPath().isEmpty()) {
             throw new IllegalArgumentException("`Feed` can't send under a path, so its `endpoint` must be only scheme, host and port, like http://localhost:8080, got: '%s'.".formatted(rEndpoint));
+        }
+
+        preflight(runContext);
+        if (isKilled.get()) {
+            return Output.builder().successCount(0L).failureCount(0L).build();
         }
 
         var failedFile = runContext.workingDir().createTempFile(".ion");
@@ -268,6 +279,21 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
     public void kill() {
         if (isKilled.compareAndSet(false, true)) {
             Optional.ofNullable(killable.get()).ifPresent(Runnable::run);
+        }
+    }
+
+    // the feed client has its own HTTP stack, so one request through Kestra's client applies the 2.0 allowed and denied hosts first
+    private void preflight(RunContext runContext) throws IllegalVariableEvaluationException {
+        var timeout = TimeoutConfiguration.builder()
+            .connectTimeout(Property.ofValue(Duration.ofSeconds(5)))
+            .readIdleTimeout(Property.ofValue(Duration.ofSeconds(5)))
+            .build();
+        try (var client = client(runContext, timeout)) {
+            request(runContext, client, HttpRequest.builder().uri(URI.create("/state/v1/health")).method("GET").build());
+        } catch (IllegalArgumentException refused) {
+            throw refused;
+        } catch (Exception ignored) {
+            // an endpoint that is down or isn't Vespa is reported by the feed client's handshake, with its own message
         }
     }
 

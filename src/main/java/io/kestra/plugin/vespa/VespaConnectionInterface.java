@@ -54,8 +54,15 @@ public interface VespaConnectionInterface {
         if (getReadTimeout() != null) {
             timeout.readIdleTimeout(getReadTimeout());
         }
+        return client(runContext, timeout.build());
+    }
+
+    /**
+     * Same client with its own time limits, for a request that must not wait as long as the task's.
+     */
+    default HttpClient client(RunContext runContext, TimeoutConfiguration timeout) throws IllegalVariableEvaluationException {
         var configuration = HttpConfiguration.builder()
-            .timeout(timeout.build())
+            .timeout(timeout)
             // a redirect would carry the token to another host, and Vespa's APIs don't redirect
             .followRedirects(Property.ofValue(false))
             .allowedResponseCodes(Property.ofValue(IntStream.range(200, 300).boxed().toList()));

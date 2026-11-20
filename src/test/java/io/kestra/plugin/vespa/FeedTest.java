@@ -7,10 +7,12 @@ import ch.qos.logback.core.AppenderBase;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.property.Property;
+import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.IdUtils;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -44,6 +46,9 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 class FeedTest extends VespaContainer {
     private static final String PATH = "/document/v1/mynamespace/music/docid/";
     private static final String ID = "id:mynamespace:music::";
+
+    @Inject
+    private ModelValidator modelValidator;
 
     @Test
     void put() throws Exception {
@@ -181,7 +186,7 @@ class FeedTest extends VespaContainer {
             var failed = stored(runContext, output.getUri()).getFirst();
             assertThat(failed.get("record"), is(invalid));
             assertThat(failed.get("error").toString(), containsString(error));
-            assertThat(stub.seen().stream().filter(s -> !handshake(s)).map(VespaStub.Seen::path).toList(), contains(PATH + "good"));
+            assertThat(stub.seen().stream().filter(s -> !handshake(s) && !preflight(s)).map(VespaStub.Seen::path).toList(), contains(PATH + "good"));
         }
     }
 
@@ -243,18 +248,25 @@ class FeedTest extends VespaContainer {
     @Test
     void noRecords() throws Exception {
         try (var stub = VespaStub.start()) {
-            for (var task : List.of(
-                Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of()).build(),
-                Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).build()
-            )) {
-                var output = task.run(runContextFactory.of());
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of()).build();
 
-                assertThat(output.getSuccessCount(), is(0L));
-                assertThat(output.getFailureCount(), is(0L));
-                assertThat(output.getUri(), is(nullValue()));
-            }
-            assertThat(stub.seen().stream().filter(s -> !handshake(s)).toList(), is(empty()));
+            var output = task.run(runContextFactory.of());
+
+            assertThat(output.getSuccessCount(), is(0L));
+            assertThat(output.getFailureCount(), is(0L));
+            assertThat(output.getUri(), is(nullValue()));
+            assertThat(stub.seen().stream().filter(s -> !handshake(s) && !preflight(s)).toList(), is(empty()));
         }
+    }
+
+    @Test
+    void fromRequired() {
+        var task = Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).build();
+
+        var violations = modelValidator.isValid(task);
+
+        assertThat(violations.isPresent(), is(true));
+        assertThat(violations.get().getMessage(), containsString("from"));
     }
 
     @Test
@@ -281,7 +293,72 @@ class FeedTest extends VespaContainer {
             var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
 
             assertThat(e.getMessage(), allOf(containsString("`endpoint`"), containsString("the container is starting")));
-            assertThat(stub.seen(), hasSize(1));
+            assertThat(stub.seen().stream().filter(s -> !preflight(s)).toList(), hasSize(1));
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("healthAnswers")
+    void preflightBeforeFeed(String name, VespaStub.Answer health) throws Exception {
+        try (var stub = VespaStub.withHealth(health, new VespaStub.Answer(200, "{}"))) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+
+            var output = task.run(runContextFactory.of());
+
+            assertThat(output.getSuccessCount(), is(1L));
+            assertThat(stub.seen().getFirst().method(), is("GET"));
+            assertThat(stub.seen().getFirst().path(), is("/state/v1/health"));
+            assertThat(stub.seen().stream().filter(FeedTest::preflight).toList(), hasSize(1));
+            assertThat(handshake(stub.seen().get(1)), is(true));
+        }
+    }
+
+    static Stream<Arguments> healthAnswers() {
+        return Stream.of(
+            Arguments.of("healthy", new VespaStub.Answer(200, "{}")),
+            Arguments.of("not found", new VespaStub.Answer(404, "{}")),
+            Arguments.of("server error", new VespaStub.Answer(500, "{\"message\": \"down\"}"))
+        );
+    }
+
+    @Test
+    void preflightSilentEndpoint() throws Exception {
+        try (var stub = VespaStub.withHealth(new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)), new VespaStub.Answer(200, "{}"))) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+            var start = Instant.now();
+
+            var output = task.run(runContextFactory.of());
+
+            assertThat(Duration.between(start, Instant.now()), lessThan(Duration.ofSeconds(30)));
+            assertThat(output.getSuccessCount(), is(1L));
+        }
+    }
+
+    @Test
+    void killDuringPreflight() throws Exception {
+        try (var stub = VespaStub.withHealth(new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)), new VespaStub.Answer(200, "{}"))) {
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).build();
+            var run = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return task.run(runContextFactory.of());
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            await("health request held", Duration.ofSeconds(30), () -> {
+                if (stub.seen().isEmpty()) {
+                    throw new IllegalStateException("no health request yet");
+                }
+                return null;
+            });
+            var killStart = Instant.now();
+
+            task.kill();
+            var output = run.get(15, TimeUnit.SECONDS);
+
+            assertThat(Duration.between(killStart, Instant.now()), lessThan(Duration.ofSeconds(15)));
+            assertThat(output.getSuccessCount(), is(0L));
+            assertThat(stub.seen().stream().filter(s -> !preflight(s)).toList(), is(empty()));
         }
     }
 
@@ -341,7 +418,7 @@ class FeedTest extends VespaContainer {
 
             assertThat(e.getMessage(), allOf(containsString("temporary file"), containsString("free disk space")));
             assertThat(e.getCause(), instanceOf(IOException.class));
-            assertThat(stub.seen().stream().filter(s -> !handshake(s)).toList(), is(empty()));
+            assertThat(stub.seen().stream().filter(s -> !handshake(s) && !preflight(s)).toList(), is(empty()));
         }
     }
 
@@ -438,7 +515,7 @@ class FeedTest extends VespaContainer {
 
             var output = task.run(runContext);
 
-            assertThat(stub.seen(), hasSize(3));
+            assertThat(stub.seen(), hasSize(4));
             assertThat(stub.seen().stream().map(VespaStub.Seen::authorization).toList(), everyItem(is(List.of("Bearer feed-secret-token"))));
             assertThat(task.toString(), not(containsString("feed-secret-token")));
             assertThat(JacksonMapper.ofJson().writeValueAsString(output), not(containsString("feed-secret-token")));
@@ -454,7 +531,7 @@ class FeedTest extends VespaContainer {
 
                 task.run(runContextFactory.of());
             }
-            assertThat(stub.seen(), hasSize(4));
+            assertThat(stub.seen(), hasSize(6));
             assertThat(stub.seen().stream().map(VespaStub.Seen::authorization).toList(), everyItem(is(nullValue())));
         }
     }
@@ -473,7 +550,7 @@ class FeedTest extends VespaContainer {
                 }
             });
             await("records in flight", Duration.ofSeconds(30), () -> {
-                if (stub.seen().size() < 2) {
+                if (stub.seen().stream().filter(s -> !preflight(s)).count() < 2) {
                     throw new IllegalStateException("no record sent yet");
                 }
                 return null;
@@ -545,6 +622,10 @@ class FeedTest extends VespaContainer {
 
     private static boolean handshake(VespaStub.Seen seen) {
         return seen.path().contains("/feeder/handshake/");
+    }
+
+    private static boolean preflight(VespaStub.Seen seen) {
+        return seen.path().equals("/state/v1/health");
     }
 
     private static URI store(RunContext runContext, List<Map<String, Object>> records) throws IOException {
