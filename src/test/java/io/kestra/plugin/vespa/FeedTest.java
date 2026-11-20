@@ -412,13 +412,13 @@ class FeedTest extends VespaContainer {
         }
     }
 
-    // a worker's run context carries the task, so core checks the rendered value against @Min and @Max
+    // a worker's run context carries the task, so core's RunContextProperty.as() checks the rendered value against @Min and @Max
     @ParameterizedTest
     @ValueSource(ints = {0, 4097})
     void renderedMaxInFlightRefused(int value) throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).maxInFlight(Property.ofExpression("{{ %d }}".formatted(value))).build();
-            var runContext = TestsUtils.mockRunContext(runContextFactory, task, Map.of());
+            var task = Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).maxInFlight(Property.ofExpression("{{ inputs.value }}")).build();
+            var runContext = TestsUtils.mockRunContext(runContextFactory, task, Map.of("value", value));
 
             var e = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(IllegalArgumentException.class, () -> task.run(runContext)));
 
