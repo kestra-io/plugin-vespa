@@ -1,0 +1,82 @@
+id: feed-options
+namespace: sanitychecks.plugin-vespa
+
+inputs:
+  - id: endpoint
+    type: STRING
+  - id: condition
+    type: STRING
+    defaults: "music.year==2000"
+  - id: createIfNotExists
+    type: BOOL
+    defaults: true
+  - id: maxInFlight
+    type: INT
+    defaults: 2
+
+tasks:
+  - id: upsert
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    operation: UPDATE
+    createIfNotExists: "{{ inputs.createIfNotExists }}"
+    maxInFlight: "{{ inputs.maxInFlight }}"
+    from:
+      - id: "id:mynamespace:music::sanity-options-a"
+        fields:
+          artist:
+            assign: "sanity options"
+          year:
+            assign: 2000
+      - id: "id:mynamespace:music::sanity-options-b"
+        fields:
+          artist:
+            assign: "sanity options"
+          year:
+            assign: 1999
+
+  - id: conditional
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    operation: UPDATE
+    condition: "{{ inputs.condition }}"
+    failOnError: false
+    from:
+      - id: "id:mynamespace:music::sanity-options-a"
+        fields:
+          album:
+            assign: "after"
+      - id: "id:mynamespace:music::sanity-options-b"
+        fields:
+          album:
+            assign: "after"
+
+  - id: get_matching
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-options-a"
+    errorOnMissing: true
+
+  - id: get_other
+    type: io.kestra.plugin.vespa.Get
+    endpoint: "{{ inputs.endpoint }}"
+    documentId: "id:mynamespace:music::sanity-options-b"
+    errorOnMissing: true
+
+  - id: remove
+    type: io.kestra.plugin.vespa.Feed
+    endpoint: "{{ inputs.endpoint }}"
+    operation: REMOVE
+    from:
+      - id: "id:mynamespace:music::sanity-options-a"
+      - id: "id:mynamespace:music::sanity-options-b"
+
+  - id: assert
+    type: io.kestra.plugin.core.execution.Assert
+    conditions:
+      - "{{ outputs.upsert.successCount == 2 }}"
+      - "{{ outputs.conditional.successCount == 1 }}"
+      - "{{ outputs.conditional.failureCount == 1 }}"
+      - "{{ outputs.get_matching.document.album == 'after' }}"
+      - "{{ (outputs.get_other.document.album ?? 'unset') == 'unset' }}"
+      - "{{ outputs.remove.successCount == 2 }}"

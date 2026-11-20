@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 // For what the test container can't show: data-plane tokens are Vespa Cloud only, a slow answer, a redirect, a hand-made answer.
 // HTTP/1.1 for Kestra's HTTP client and HTTP/2 without TLS for Vespa's feed client, on one port.
-record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
+// mostAnswering: the highest number of requests it was answering at one time
+record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) implements AutoCloseable {
     private static final String HEALTH = "/state/v1/health";
     private static final Answer HEALTHY = new Answer(200, "{}");
 
@@ -57,6 +58,8 @@ record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
     private static VespaStub start(Duration delay, String location, Answer health, List<Answer> answers) throws Exception {
         var seen = new CopyOnWriteArrayList<Seen>();
         var answered = new AtomicInteger();
+        var answering = new AtomicInteger();
+        var mostAnswering = new AtomicInteger();
         var server = new Server();
         // Vespa takes an encoded `/` in a document ID, which Jetty refuses by default
         var configuration = new HttpConfiguration();
@@ -78,10 +81,13 @@ record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
                     Content.Source.asString(request, StandardCharsets.UTF_8)
                 ));
                 var answer = HEALTH.equals(request.getHttpURI().getPath()) ? health : answers.get(Math.min(answered.incrementAndGet(), answers.size()) - 1);
+                mostAnswering.accumulateAndGet(answering.incrementAndGet(), Math::max);
                 try {
                     Thread.sleep(delay.plus(answer.delay()));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                } finally {
+                    answering.decrementAndGet();
                 }
                 if (location != null) {
                     response.getHeaders().add("Location", location);
@@ -93,7 +99,7 @@ record VespaStub(Server server, List<Seen> seen) implements AutoCloseable {
             }
         });
         server.start();
-        return new VespaStub(server, seen);
+        return new VespaStub(server, seen, mostAnswering);
     }
 
     String endpoint() {
