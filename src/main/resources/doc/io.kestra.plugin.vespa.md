@@ -1,7 +1,7 @@
 # How to use the Vespa plugin
 
 Query a [Vespa](https://docs.vespa.ai/) application from Kestra flows with YQL (text, vector and hybrid search), read
-documents by their ID, and delete documents by ID or by selection.
+documents by their ID, delete documents by ID or by selection, and feed many documents at once.
 
 ## Authentication
 
@@ -38,3 +38,18 @@ chunks of up to 60 seconds each; with `readTimeout` set, each chunk is kept to h
 documents, a failure names how many were already removed. It returns `deleted`, the number of documents removed; for
 a delete by ID Vespa answers the same whether the document existed, so `deleted` is null and a mistyped ID succeeds
 without removing anything.
+
+`Feed` writes (`PUT`, default), updates (`UPDATE`, with `fields` in Vespa's
+[update format](https://docs.vespa.ai/en/reference/document-json-format.html#update)) or removes (`REMOVE`) many
+documents through Vespa's [feed client](https://docs.vespa.ai/en/vespa-feed-client.html), which retries throttled
+answers. `from` takes the records inline or as a `kestra://` file from a previous task (Kestra reads that file
+whole into memory before the first record is sent, so split very large files); each record is a map with
+`id` and `fields` (`REMOVE` needs only `id`). An `id` that starts with `id:` is the full document ID; any other `id` is
+a key, completed with `namespace` and `documentType`. It returns `successCount` and `failureCount`. A record Vespa
+refuses fails the task once the others are written; with `failOnError: false` the task ends in `WARNING` and `uri`
+holds the failed records, each row with the `record` as given and its `error`. Each operation gets `readTimeout`
+(5 minutes when unset); one that runs out may still have been applied by Vespa. `connectTimeout` doesn't apply to
+`Feed`, and its `endpoint` must have no path (only scheme, host and port): the feed client always sends to the
+host's root. Before feeding, `Feed` sends one `HEAD /state/v1/health` through Kestra's HTTP client, so
+Kestra's allowed and denied hosts (`kestra.tasks.http.allowed-list` and `denied-list`, from Kestra 2.0) apply to it
+too.

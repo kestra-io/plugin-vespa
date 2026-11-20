@@ -138,6 +138,14 @@ public class VespaContainer {
         }
     }
 
+    /** Removes the document on {@code path} without the plugin: the feed tests clean their own data up. */
+    static void delete(String path) {
+        var response = send(HttpRequest.newBuilder(URI.create(url(8080) + path)).DELETE().build());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Vespa refused the delete on %s with status %d: %s".formatted(path, response.statusCode(), response.body()));
+        }
+    }
+
     /** Vespa's status for a document GET on {@code path}: 404 once the document is gone. */
     static int status(String path) {
         return send(get(url(8080) + path)).statusCode();
