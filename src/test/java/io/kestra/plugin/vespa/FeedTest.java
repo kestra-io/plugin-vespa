@@ -602,7 +602,7 @@ class FeedTest extends VespaContainer {
                 }
             });
             await("one record in flight", Duration.ofSeconds(30), () -> {
-                if (stub.seen().size() < 2) {
+                if (stub.seen().stream().filter(s -> !preflight(s)).count() < 2) {
                     throw new IllegalStateException("no record sent yet");
                 }
                 return null;
@@ -614,7 +614,7 @@ class FeedTest extends VespaContainer {
             Thread.sleep(Duration.ofSeconds(1));
 
             assertThat(stub.seen().size(), is(seenAfterKill));
-            assertThat(seenAfterKill, is(2));
+            assertThat(stub.seen().stream().filter(s -> !preflight(s)).count(), is(2L));
         }
     }
 
@@ -827,13 +827,13 @@ class FeedTest extends VespaContainer {
     @Test
     void maxInFlightBounds() {
         for (var refused : List.of(0, -1, 4097)) {
-            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).maxInFlight(Property.ofValue(refused)).build());
+            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).from(List.of(record("feedtest-bounds", Map.of("album", "x")))).maxInFlight(Property.ofValue(refused)).build());
 
             assertThat(String.valueOf(refused), violations.isPresent(), is(true));
             assertThat(String.valueOf(refused), violations.get().getMessage(), containsString("maxInFlight"));
         }
         for (var accepted : List.of(1, 4096)) {
-            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).maxInFlight(Property.ofValue(accepted)).build());
+            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).from(List.of(record("feedtest-bounds", Map.of("album", "x")))).maxInFlight(Property.ofValue(accepted)).build());
 
             assertThat(String.valueOf(accepted), violations.isEmpty(), is(true));
         }
