@@ -12,12 +12,14 @@ import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.IdUtils;
+import io.kestra.core.utils.TestsUtils;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -406,6 +408,21 @@ class FeedTest extends VespaContainer {
             var e = assertThrows(IllegalArgumentException.class, () -> task.apply(stub.endpoint()).run(runContextFactory.of()));
 
             assertThat(e.getMessage(), containsString(property));
+            assertThat(stub.seen(), is(empty()));
+        }
+    }
+
+    // a worker's run context carries the task, so core checks the rendered value against @Min and @Max
+    @ParameterizedTest
+    @ValueSource(ints = {0, 4097})
+    void renderedMaxInFlightRefused(int value) throws Exception {
+        try (var stub = VespaStub.start()) {
+            var task = Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).maxInFlight(Property.ofExpression("{{ %d }}".formatted(value))).build();
+            var runContext = TestsUtils.mockRunContext(runContextFactory, task, Map.of());
+
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(IllegalArgumentException.class, () -> task.run(runContext)));
+
+            assertThat(e.getCause().getMessage(), containsString("maxInFlight: must be"));
             assertThat(stub.seen(), is(empty()));
         }
     }
