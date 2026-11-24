@@ -218,7 +218,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         return built;
     }
 
-    private static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
+    static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
         var file = runContext.workingDir().createTempFile(".ion").toFile();
         // one stream, not FileSerde.write per row: on Kestra 2.0 each write is a whole binary ION document (kestra-io/kestra#22557)
         try (var output = new BufferedOutputStream(new FileOutputStream(file), FileSerde.BUFFER_SIZE)) {

@@ -1,7 +1,8 @@
 # How to use the Vespa plugin
 
 Query a [Vespa](https://docs.vespa.ai/) application from Kestra flows with YQL (text, vector and hybrid search), read
-documents by their ID, delete documents by ID or by selection, and feed many documents at once.
+documents by their ID, delete documents by ID or by selection, feed many documents at once, and start a flow when new
+documents match a query.
 
 ## Authentication
 
@@ -60,3 +61,16 @@ too.
 document is written without checking the condition; Vespa also writes it when every replica of an existing document
 is unreachable ([Vespa's warning](https://docs.vespa.ai/en/writing/document-v1-api-guide.html#conditional-updates-and-puts-with-create)).
 `maxInFlight` (1 to 4096, default 4096) caps the records waiting for Vespa's answer, to put less load on Vespa.
+
+## Triggers
+
+`Trigger` runs a YQL query (`yql`) every `interval` (default 60 seconds) and starts the flow with the documents it
+hasn't delivered before, as `trigger.rows` in the same shape as `Query`, or in an ION file at `trigger.uri` with
+`fetchType: STORE`; `trigger.size` is how many were delivered. `watermarkField` names a whole-number attribute that
+grows with every write, like the time the document was fed: the trigger keeps the highest value it delivered, and
+the document IDs at that value, in the namespace KV store, and asks Vespa only for documents at or above it, oldest
+first, through Vespa's `recall` and `sorting` parameters, so the YQL is sent as written. A document written later
+with a lower value is never delivered, and a removed document fires nothing. The first poll delivers what already
+matches, up to `hits` (default 100) per poll, so a large backlog arrives over several polls. Each hit must carry its
+document ID and the `watermarkField` value, as `select *` does; the YQL can't have an `order by` or an `offset`. More
+documents at one value than `hits` fails the poll, with a message to raise `hits`.
