@@ -310,11 +310,17 @@ class TriggerTest extends VespaContainer {
         fed.add("offset");
         put(PATH + "escaped", Map.of("album", "a \" limit 10", "genre", genre, "added_at", 40));
         fed.add("escaped");
+        put(PATH + "apostrophe", Map.of("album", "it's limit 10", "genre", genre, "added_at", 50));
+        fed.add("apostrophe");
+        put(PATH + "quoted", Map.of("album", "say \"limit 10\"", "genre", genre, "added_at", 60));
+        fed.add("quoted");
         var cases = Map.of(
             "album contains \"limit 10\"", key("limit"),
             "album contains \"order by\"", key("order"),
             "album contains 'offset 5'", key("offset"),
-            "album contains \"a \\\" limit 10\"", key("escaped")
+            "album contains \"a \\\" limit 10\"", key("escaped"),
+            "album contains \"it's limit 10\"", key("apostrophe"),
+            "album contains 'say \"limit 10\"'", key("quoted")
         );
 
         for (var testCase : cases.entrySet()) {
