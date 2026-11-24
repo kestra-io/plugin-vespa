@@ -20,6 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
+import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +35,7 @@ import static io.kestra.core.tenant.TenantService.MAIN_TENANT;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class TriggerTest extends VespaContainer {
     private static final String PATH = "/document/v1/mynamespace/music/docid/";
@@ -337,6 +339,18 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
+    void unclosedQuoteIsCheckedQuickly() {
+        var text = "\\\"".repeat(40_000);
+        var trigger = trigger(genre())
+            .yql(Property.ofValue("select * from music where album contains \"%s limit 10".formatted(text)))
+            .build();
+
+        var error = assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertThrows(IllegalArgumentException.class, () -> evaluate(trigger, "flow")));
+
+        assertThat(error.getMessage(), containsString("'limit'"));
+    }
+
+    @Test
     void unselectedWatermarkFieldFails() throws Exception {
         var genre = genre();
         feed("a", genre, 10);
@@ -346,9 +360,13 @@ class TriggerTest extends VespaContainer {
             .yql(Property.ofValue("select documentid, album from music where genre contains \"%s\"".formatted(genre)))
             .build();
 
-        var first = assertThrows(IllegalStateException.class, () -> evaluate(withoutField, "flow"));
+        var context = context(withoutField, "flow");
+        try (var logs = capture(context.getKey().getRunContext())) {
+            var first = assertThrows(IllegalStateException.class, () -> withoutField.evaluate(context.getKey(), context.getValue()));
 
-        assertThat(first.getMessage(), allOf(containsString("added_at"), containsString("select")));
+            assertThat(first.getMessage(), allOf(containsString("added_at"), containsString("select")));
+            assertThat(logs.warnings(), empty());
+        }
         assertThat(stored(withoutField, "flow"), is(Optional.empty()));
 
         assertThat(poll(selectsAll), contains(key("a")));

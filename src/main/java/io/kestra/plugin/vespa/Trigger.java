@@ -79,8 +79,6 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     private static final Pattern ORDER_BY = Pattern.compile("(?i)\\border\\s+by\\b");
     private static final Pattern OFFSET = Pattern.compile("(?i)\\boffset\\s+\\d+");
     private static final Pattern LIMIT = Pattern.compile("(?i)\\blimit\\s+\\d+");
-    // possessive and unrolled: an alternation inside a repeated group recurses per character and overflows the stack on long text
-    private static final Pattern QUOTED = Pattern.compile("\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'");
     // the trigger sets the sorting, recall and hits parameters itself; an offset would skip documents
     private static final Set<String> RESERVED_PARAMETERS = Set.of("recall", "sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start");
 
@@ -311,7 +309,7 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     }
 
     private static void checkYql(String rYql) {
-        var clauses = QUOTED.matcher(rYql).replaceAll("\"\"");
+        var clauses = withoutQuotedText(rYql);
         if (ORDER_BY.matcher(clauses).find()) {
             throw new IllegalArgumentException("The trigger's YQL can't have an 'order by': the trigger sorts by `watermarkField` to deliver each document once.");
         }
@@ -321,6 +319,40 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         if (LIMIT.matcher(clauses).find()) {
             throw new IllegalArgumentException("The trigger's YQL can't have a 'limit': it would stop the trigger at documents it already delivered; set `hits` instead.");
         }
+    }
+
+    // one pass with no regex: a quote that never closes leaves the rest as is, so no input makes the check slow
+    private static String withoutQuotedText(String yql) {
+        var text = new StringBuilder(yql.length());
+        var i = 0;
+        while (i < yql.length()) {
+            var c = yql.charAt(i);
+            if (c != '"' && c != '\'') {
+                text.append(c);
+                i++;
+                continue;
+            }
+            var end = closingQuote(yql, i);
+            if (end < 0) {
+                return text.append(yql, i, yql.length()).toString();
+            }
+            text.append("\"\"");
+            i = end + 1;
+        }
+        return text.toString();
+    }
+
+    private static int closingQuote(String yql, int open) {
+        var quote = yql.charAt(open);
+        for (var i = open + 1; i < yql.length(); i++) {
+            var c = yql.charAt(i);
+            if (c == '\\') {
+                i++;
+            } else if (c == quote) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static void checkParameters(Map<String, Object> rParameters) {
