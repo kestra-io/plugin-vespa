@@ -346,7 +346,7 @@ class TriggerTest extends VespaContainer {
 
     @Test
     void unclosedQuoteIsCheckedQuickly() {
-        var text = "\\\"".repeat(80_000);
+        var text = "\\\"".repeat(250_000);
         var trigger = trigger(genre())
             .yql(Property.ofValue("select * from music where album contains \"%s limit 10".formatted(text)))
             .build();
