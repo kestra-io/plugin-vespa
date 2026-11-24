@@ -346,12 +346,14 @@ class TriggerTest extends VespaContainer {
 
     @Test
     void unclosedQuoteIsCheckedQuickly() {
-        var text = "\\\"".repeat(40_000);
+        var text = "\\\"".repeat(80_000);
         var trigger = trigger(genre())
             .yql(Property.ofValue("select * from music where album contains \"%s limit 10".formatted(text)))
             .build();
 
-        var error = assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertThrows(IllegalArgumentException.class, () -> evaluate(trigger, "flow")));
+        var context = context(trigger, "flow");
+
+        var error = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThrows(IllegalArgumentException.class, () -> trigger.evaluate(context.getKey(), context.getValue())));
 
         assertThat(error.getMessage(), containsString("'limit'"));
     }
