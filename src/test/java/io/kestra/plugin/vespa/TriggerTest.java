@@ -456,7 +456,7 @@ class TriggerTest extends VespaContainer {
 
         var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
 
-        assertThat(error.getMessage(), allOf(containsString("grouping"), containsString("remove")));
+        assertThat(error.getMessage(), allOf(containsString("delivers documents, not grouping results"), containsString("remove the grouping")));
     }
 
     @Test

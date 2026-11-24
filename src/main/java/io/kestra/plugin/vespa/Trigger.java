@@ -337,7 +337,7 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     private static OptionalLong value(Map<String, Object> row, String field) {
         var id = (String) row.get("id");
         if (id.startsWith("group:")) {
-            throw new IllegalStateException("The trigger's YQL has a grouping: a grouping answer has no documents to deliver; remove the grouping (the part after `|`).");
+            throw new IllegalStateException("The trigger's YQL has a grouping: the trigger delivers documents, not grouping results; remove the grouping (the part after `|`).");
         }
         if (!id.startsWith("id:")) {
             throw new IllegalStateException("The trigger needs each hit's document ID, but Vespa answered '%s'; select it with `select *` or a summary that has `documentid`.".formatted(id));
