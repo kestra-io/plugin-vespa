@@ -1,8 +1,9 @@
 package io.kestra.plugin.vespa;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
+import ch.qos.logback.core.AppenderBase;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.executions.Execution;
@@ -24,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -159,7 +161,7 @@ class TriggerTest extends VespaContainer {
 
         var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
 
-        assertThat(error.getMessage(), allOf(containsString("399"), containsString("added_at = 10"), containsString("401"), containsString("maxHits")));
+        assertThat(error.getMessage(), allOf(containsString("399 documents already delivered share added_at = 10"), containsString("401 hits"), containsString("lower `hits`"), containsString("raise `maxHits`")));
         assertThat(stored(trigger, "flow"), is(Optional.of(watermark)));
     }
 
@@ -190,20 +192,24 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
-    void rejectsOrderByOffsetLimitAndOwnParameters() {
-        var cases = new ArrayList<Map.Entry<Trigger, String>>();
-        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true ORDER  BY year")).build(), "order by"));
-        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true limit 5 offset 2")).build(), "offset"));
-        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true LIMIT 5")).build(), "limit"));
-        for (var parameter : List.of("recall", "Sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start")) {
-            cases.add(Map.entry(trigger(genre()).parameters(Property.ofValue(Map.of(parameter, "x"))).build(), parameter));
-        }
-        cases.add(Map.entry(trigger(genre()).parameters(Property.ofValue(Map.of("ranking", Map.of("sorting", "x")))).build(), "ranking.sorting"));
+    void rejectsOrderByOffsetLimitAndOwnParameters() throws Exception {
+        try (var stub = VespaStub.start()) {
+            var endpoint = Property.ofValue(stub.endpoint());
+            var cases = new ArrayList<Map.Entry<Trigger, String>>();
+            cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true ORDER  BY year")).build(), "order by"));
+            cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true limit 5 offset 2")).build(), "offset"));
+            cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true LIMIT 5")).build(), "limit"));
+            for (var parameter : List.of("recall", "Sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start")) {
+                cases.add(Map.entry(trigger(genre()).endpoint(endpoint).parameters(Property.ofValue(Map.of(parameter, "x"))).build(), parameter));
+            }
+            cases.add(Map.entry(trigger(genre()).endpoint(endpoint).parameters(Property.ofValue(Map.of("ranking", Map.of("sorting", "x")))).build(), "ranking.sorting"));
 
-        for (var testCase : cases) {
-            var expected = testCase.getValue();
-            var error = assertThrows(IllegalArgumentException.class, () -> evaluate(testCase.getKey(), "flow"), expected);
-            assertThat(expected, error.getMessage(), containsStringIgnoringCase("'" + expected + "'"));
+            for (var testCase : cases) {
+                var expected = testCase.getValue();
+                var error = assertThrows(IllegalArgumentException.class, () -> evaluate(testCase.getKey(), "flow"), expected);
+                assertThat(expected, error.getMessage(), containsStringIgnoringCase("'" + expected + "'"));
+            }
+            assertThat(searches(stub), empty());
         }
     }
 
@@ -238,7 +244,7 @@ class TriggerTest extends VespaContainer {
 
                 var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"), decimal);
 
-                assertThat(decimal, error.getMessage(), allOf(containsString("added_at"), containsString("id:mynamespace:music::p")));
+                assertThat(decimal, error.getMessage(), allOf(containsString("added_at"), containsString("id:mynamespace:music::p"), containsString(decimal), containsString("`int` or `long`")));
             }
         }
     }
@@ -278,15 +284,15 @@ class TriggerTest extends VespaContainer {
         try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":3},\"coverage\":{\"full\":true},\"children\":[" + noValue + "," + noFields + "," + dated + "]}}")) {
             var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
             var context = context(trigger, "flow");
-            var logs = capture(context.getKey().getRunContext());
+            try (var logs = capture(context.getKey().getRunContext())) {
+                var execution = trigger.evaluate(context.getKey(), context.getValue()).orElseThrow();
 
-            var execution = trigger.evaluate(context.getKey(), context.getValue()).orElseThrow();
-
-            assertThat(keys(execution), contains("id:mynamespace:music::dated"));
-            assertThat(warnings(logs), hasItems(
-                allOf(containsString("id:mynamespace:music::nodate"), containsString("added_at")),
-                allOf(containsString("id:mynamespace:music::nofields"), containsString("added_at"))
-            ));
+                assertThat(keys(execution), contains("id:mynamespace:music::dated"));
+                assertThat(logs.warnings(), hasItems(
+                    allOf(containsString("id:mynamespace:music::nodate"), containsString("added_at")),
+                    allOf(containsString("id:mynamespace:music::nofields"), containsString("added_at"))
+                ));
+            }
         }
     }
 
@@ -369,7 +375,7 @@ class TriggerTest extends VespaContainer {
             var error = assertThrows(Exception.class, () -> evaluate(trigger, "flow"));
 
             assertThat(error.getMessage(), allOf(containsString("hits"), containsString("1")));
-            assertThat(stub.seen().stream().filter(seen -> seen.path().startsWith("/search/")).toList(), empty());
+            assertThat(searches(stub), empty());
         }
     }
 
@@ -409,6 +415,48 @@ class TriggerTest extends VespaContainer {
             assertThat(bodies.getFirst().get("recall"), is("+added_at:[-9223372036854775808;]"));
             assertThat(bodies.get(1).get("recall"), is("+added_at:[50;]"));
         }
+    }
+
+    @Test
+    void hitsAtMaxHitsFailsWithAClearMessage() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        feed("b", genre, 20);
+        var trigger = trigger(genre).hits(Property.ofValue(400)).build();
+        assertThat(poll(trigger), contains(key("a"), key("b")));
+        var watermark = stored(trigger, "flow");
+
+        feed("c", genre, 20);
+        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+
+        assertThat(error.getMessage(), allOf(containsString("1 document already delivered shares added_at = 20"), containsString("401 hits"), containsString("lower `hits`")));
+        assertThat(stored(trigger, "flow"), is(watermark));
+    }
+
+    @Test
+    void hitsOverflowFails() throws Exception {
+        try (var stub = VespaStub.start()) {
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).hits(Property.ofValue(Integer.MAX_VALUE)).build();
+            store(trigger, "flow", "{\"field\":\"added_at\",\"value\":10,\"ids\":[\"id:mynamespace:music::x\"]}");
+
+            var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+
+            assertThat(error.getMessage(), allOf(containsString("too large"), containsString("lower `hits`")));
+            assertThat(searches(stub), empty());
+        }
+    }
+
+    @Test
+    void groupingQueryFails() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        var trigger = trigger(genre)
+            .yql(Property.ofValue("select * from music where genre contains \"%s\" | all(group(genre) each(output(count())))".formatted(genre)))
+            .build();
+
+        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+
+        assertThat(error.getMessage(), allOf(containsString("grouping"), containsString("remove")));
     }
 
     @Test
@@ -557,14 +605,44 @@ class TriggerTest extends VespaContainer {
         return value.map(v -> (String) v.value());
     }
 
-    private static ListAppender<ILoggingEvent> capture(RunContext runContext) {
-        var appender = new ListAppender<ILoggingEvent>();
-        appender.start();
-        ((Logger) runContext.logger()).addAppender(appender);
-        return appender;
+    private static List<String> searches(VespaStub stub) {
+        return stub.seen().stream().map(VespaStub.Seen::path).filter(path -> path.startsWith("/search/")).toList();
     }
 
-    private static List<String> warnings(ListAppender<ILoggingEvent> logs) {
-        return logs.list.stream().filter(e -> e.getLevel().levelStr.equals("WARN")).map(ILoggingEvent::getFormattedMessage).toList();
+    private static Capture capture(RunContext runContext) {
+        var capture = new Capture((Logger) runContext.logger(), new CopyOnWriteArrayList<>());
+        capture.start();
+        capture.logger().addAppender(capture);
+        return capture;
+    }
+
+    // a list that's safe to read while the trigger's logger writes to it; detached when the test ends
+    private static final class Capture extends AppenderBase<ILoggingEvent> implements AutoCloseable {
+        private final Logger logger;
+        private final List<ILoggingEvent> events;
+
+        private Capture(Logger logger, List<ILoggingEvent> events) {
+            this.logger = logger;
+            this.events = events;
+        }
+
+        Logger logger() {
+            return logger;
+        }
+
+        List<String> warnings() {
+            return events.stream().filter(e -> e.getLevel() == Level.WARN).map(ILoggingEvent::getFormattedMessage).toList();
+        }
+
+        @Override
+        protected void append(ILoggingEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public void close() {
+            logger.detachAppender(this);
+            stop();
+        }
     }
 }

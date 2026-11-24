@@ -74,7 +74,10 @@ with a lower value is never delivered, and a removed document fires nothing. The
 matches, up to `hits` (default 100) per poll, so a large backlog arrives over several polls. Each hit must carry its
 document ID and the `watermarkField` value, as `select *` does; the YQL can't have an `order by`, an `offset` or a
 `limit`. Keep the field fine-grained (like milliseconds): once more documents share its highest value than Vespa's
-`maxHits` (400 by default) leaves room for, the poll fails with a message to raise it. A document without a
-`watermarkField` value is never delivered. If Vespa searched only part of the corpus, the poll delivers nothing and the
+`maxHits` (400 by default) leaves room for, the poll fails with a message saying what to change; keep `hits` well
+under `maxHits` for the same reason. A document without a `watermarkField` value is never delivered, and a grouping
+YQL is refused. The watermark lives in the flow's namespace KV store under
+`vespa_trigger_watermark_<flow id length>_<flow id>_<trigger id length>_<trigger id>` and outlives the flow: delete
+that key to start over. If Vespa searched only part of the corpus, the poll delivers nothing and the
 next one tries again. On Kestra 2.0 with `allowConcurrent: true` a slow poll can overlap the next one and deliver the
 same documents twice.
