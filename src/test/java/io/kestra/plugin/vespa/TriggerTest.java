@@ -199,6 +199,7 @@ class TriggerTest extends VespaContainer {
             cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true ORDER  BY year")).build(), "order by"));
             cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true limit 5 offset 2")).build(), "offset"));
             cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where true LIMIT 5")).build(), "limit"));
+            cases.add(Map.entry(trigger(genre()).endpoint(endpoint).yql(Property.ofValue("select * from music where album contains \"x\" limit 10")).build(), "limit"));
             for (var parameter : List.of("recall", "Sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start")) {
                 cases.add(Map.entry(trigger(genre()).endpoint(endpoint).parameters(Property.ofValue(Map.of(parameter, "x"))).build(), parameter));
             }
@@ -294,6 +295,69 @@ class TriggerTest extends VespaContainer {
                 ));
             }
         }
+    }
+
+    @Test
+    void quotedClauseWordsAreAllowed() throws Exception {
+        var genre = genre();
+        put(PATH + "limit", Map.of("album", "limit 10", "genre", genre, "added_at", 10));
+        fed.add("limit");
+        put(PATH + "order", Map.of("album", "order by", "genre", genre, "added_at", 20));
+        fed.add("order");
+        put(PATH + "offset", Map.of("album", "offset 5", "genre", genre, "added_at", 30));
+        fed.add("offset");
+        put(PATH + "escaped", Map.of("album", "a \" limit 10", "genre", genre, "added_at", 40));
+        fed.add("escaped");
+        var cases = Map.of(
+            "album contains \"limit 10\"", key("limit"),
+            "album contains \"order by\"", key("order"),
+            "album contains 'offset 5'", key("offset"),
+            "album contains \"a \\\" limit 10\"", key("escaped")
+        );
+
+        for (var testCase : cases.entrySet()) {
+            var yql = "select * from music where genre contains \"%s\" and %s".formatted(genre, testCase.getKey());
+            var trigger = trigger(genre).yql(Property.ofValue(yql)).build();
+
+            assertThat(yql, poll(trigger), hasItem(testCase.getValue()));
+        }
+    }
+
+    @Test
+    void longQuotedTextIsChecked() throws Exception {
+        try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":0},\"coverage\":{\"full\":true}}}")) {
+            var text = "\\\" ".repeat(20_000);
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint()))
+                .yql(Property.ofValue("select * from music where album contains \"%s limit 10\"".formatted(text)))
+                .build();
+
+            assertThat(evaluate(trigger, "flow"), is(Optional.empty()));
+            assertThat(searches(stub), hasSize(1));
+        }
+    }
+
+    @Test
+    void unselectedWatermarkFieldFails() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        var id = "trigger_" + IdUtils.create();
+        var selectsAll = trigger(genre).id(id).build();
+        var withoutField = trigger(genre).id(id)
+            .yql(Property.ofValue("select documentid, album from music where genre contains \"%s\"".formatted(genre)))
+            .build();
+
+        var first = assertThrows(IllegalStateException.class, () -> evaluate(withoutField, "flow"));
+
+        assertThat(first.getMessage(), allOf(containsString("added_at"), containsString("select")));
+        assertThat(stored(withoutField, "flow"), is(Optional.empty()));
+
+        assertThat(poll(selectsAll), contains(key("a")));
+        var watermark = stored(selectsAll, "flow");
+
+        var afterDelivery = assertThrows(IllegalStateException.class, () -> evaluate(withoutField, "flow"));
+
+        assertThat(afterDelivery.getMessage(), containsString("added_at"));
+        assertThat(stored(selectsAll, "flow"), is(watermark));
     }
 
     @Test

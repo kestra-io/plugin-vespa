@@ -46,15 +46,8 @@ import java.util.regex.Pattern;
     description = """
         Runs a YQL query every `interval` and starts the flow with the documents it hasn't delivered before, as \
         `trigger.rows` (or in the file at `trigger.uri` with `fetchType=STORE`), in the same shape as the `Query` task. \
-        Each document is delivered once: the trigger keeps the highest `watermarkField` value it delivered, and the \
-        document IDs at that value, in the namespace KV store, and asks Vespa only for documents at or above it, oldest \
-        first. A document written later with a lower `watermarkField` value is never delivered, so the field must grow \
-        with every write, like the time the document was fed. The first poll delivers what already matches, one page of \
-        `hits` per poll. `trigger.totalCount` is Vespa's count for the poll, which includes the documents already \
-        delivered at the watermark value. If Vespa searched only part of the corpus (an error or partial coverage), the \
-        poll delivers nothing and the next one tries again. A document without a `watermarkField` value is never \
-        delivered. On Kestra 2.0 with `allowConcurrent: true`, Kestra doesn't lock the trigger while it polls, so a poll \
-        slower than `interval` can overlap the next one and both deliver the same documents."""
+        Each document is delivered once: the trigger remembers the highest `watermarkField` value it delivered, so \
+        that field must grow with every write, like the time the document was fed."""
 )
 @Plugin(
     examples = {
@@ -86,6 +79,8 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     private static final Pattern ORDER_BY = Pattern.compile("(?i)\\border\\s+by\\b");
     private static final Pattern OFFSET = Pattern.compile("(?i)\\boffset\\s+\\d+");
     private static final Pattern LIMIT = Pattern.compile("(?i)\\blimit\\s+\\d+");
+    // possessive and unrolled: an alternation inside a repeated group recurses per character and overflows the stack on long text
+    private static final Pattern QUOTED = Pattern.compile("\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+\"|'[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+'");
     // the trigger sets the sorting, recall and hits parameters itself; an offset would skip documents
     private static final Set<String> RESERVED_PARAMETERS = Set.of("recall", "sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start");
 
@@ -112,14 +107,10 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @Schema(
         title = "Numeric attribute that orders the documents",
         description = """
-            An `int` or `long` attribute of the schema that grows with every write, like the time the document was fed \
-            in milliseconds; an attribute of another type matches nothing, so the trigger never fires. Keep it \
-            fine-grained: the trigger asks Vespa again for the documents it already delivered at its highest value, so \
-            once more of them share one value than Vespa's `maxHits` (400 by default) leaves room for, the poll fails \
-            with a message saying what to change. A document without a value is never delivered. The watermark lives in the \
-            flow's namespace KV store under `vespa_trigger_watermark_<flow id length>_<flow id>_<trigger id length>_<trigger id>` \
-            and outlives the flow: delete that key to start over. Changing the field starts over \
-            from the lowest value of the new field."""
+            An `int` or `long` attribute that grows with every write, like the time the document was fed in \
+            milliseconds. The watermark lives in the flow's namespace KV store under \
+            `vespa_trigger_watermark_<flow id length>_<flow id>_<trigger id length>_<trigger id>`: delete that key to \
+            start over."""
     )
     @NotNull
     @PluginProperty(group = "main")
@@ -288,10 +279,15 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     }
 
     private static List<Hit> newHits(RunContext runContext, List<Map<String, Object>> rows, Settings settings, Watermark watermark) {
+        var values = rows.stream().map(row -> value(row, settings.field())).toList();
+        if (!rows.isEmpty() && values.stream().allMatch(OptionalLong::isEmpty)) {
+            throw new IllegalStateException("No hit carries '%s'; select it in the YQL (`select *` or a summary that has it).".formatted(settings.field()));
+        }
         var hits = new ArrayList<Hit>();
         var withoutValue = 0;
-        for (var row : rows) {
-            var value = value(row, settings.field());
+        for (var i = 0; i < rows.size(); i++) {
+            var row = rows.get(i);
+            var value = values.get(i);
             if (value.isEmpty()) {
                 runContext.logger().warn("Skipped the document '{}': it has no value in '{}', so the trigger never delivers it.", row.get("id"), settings.field());
                 withoutValue++;
@@ -299,8 +295,9 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
                 hits.add(new Hit(row, value.getAsLong()));
             }
         }
+        var deliveredIds = watermark == null ? Set.<String>of() : Set.copyOf(watermark.ids());
         var fresh = hits.stream()
-            .filter(hit -> watermark == null || hit.value() != watermark.value() || !watermark.ids().contains(hit.id()))
+            .filter(hit -> watermark == null || hit.value() != watermark.value() || !deliveredIds.contains(hit.id()))
             .toList();
         var delivered = fresh.stream().limit(settings.hits()).toList();
         runContext.logger().debug("Vespa answered {} hits: {} already delivered, {} without a value, {} left for the next poll",
@@ -314,13 +311,14 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     }
 
     private static void checkYql(String rYql) {
-        if (ORDER_BY.matcher(rYql).find()) {
+        var clauses = QUOTED.matcher(rYql).replaceAll("\"\"");
+        if (ORDER_BY.matcher(clauses).find()) {
             throw new IllegalArgumentException("The trigger's YQL can't have an 'order by': the trigger sorts by `watermarkField` to deliver each document once.");
         }
-        if (OFFSET.matcher(rYql).find()) {
+        if (OFFSET.matcher(clauses).find()) {
             throw new IllegalArgumentException("The trigger's YQL can't have an 'offset': it would skip documents.");
         }
-        if (LIMIT.matcher(rYql).find()) {
+        if (LIMIT.matcher(clauses).find()) {
             throw new IllegalArgumentException("The trigger's YQL can't have a 'limit': it would stop the trigger at documents it already delivered; set `hits` instead.");
         }
     }
