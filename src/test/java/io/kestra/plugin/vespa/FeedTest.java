@@ -12,11 +12,14 @@ import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.IdUtils;
+import io.kestra.core.utils.TestsUtils;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -35,6 +38,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -43,6 +47,8 @@ import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+// a broken slot count blocks `run()` forever; fail the test instead of hanging the build
+@Timeout(60)
 class FeedTest extends VespaContainer {
     private static final String PATH = "/document/v1/mynamespace/music/docid/";
     private static final String ID = "id:mynamespace:music::";
@@ -381,31 +387,42 @@ class FeedTest extends VespaContainer {
         }
     }
 
-    // the endpoint column is a format: %s is the stub's endpoint
+    // the task column builds the task for the stub's endpoint
     static Stream<Arguments> invalidProperties() {
         return Stream.of(
-            Arguments.of("operation", "`operation`", Property.ofExpression("{{ 'UPSERT' }}"), Property.ofValue(true), "%s"),
-            Arguments.of("failOnError", "`failOnError`", Property.ofValue(Feed.Operation.PUT), Property.ofExpression("{{ 'maybe' }}"), "%s"),
-            Arguments.of("endpoint not http", "endpoint", Property.ofValue(Feed.Operation.PUT), Property.ofValue(true), "ftp://localhost"),
-            Arguments.of("endpoint with a path", "`endpoint`", Property.ofValue(Feed.Operation.PUT), Property.ofValue(true), "%s/prefix")
+            Arguments.of("operation", "`operation`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).operation(Property.ofExpression("{{ 'UPSERT' }}")).build()),
+            Arguments.of("failOnError", "`failOnError`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).failOnError(Property.ofExpression("{{ 'maybe' }}")).build()),
+            Arguments.of("endpoint not http", "endpoint", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue("ftp://localhost")).from(List.of(record("a", Map.of("album", "x")))).build()),
+            Arguments.of("endpoint with a path", "`endpoint`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint + "/prefix")).from(List.of(record("a", Map.of("album", "x")))).build()),
+            Arguments.of("createIfNotExists", "`createIfNotExists`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).createIfNotExists(Property.ofExpression("{{ 'maybe' }}")).build()),
+            Arguments.of("maxInFlight", "`maxInFlight`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).maxInFlight(Property.ofExpression("{{ 'many' }}")).build()),
+            Arguments.of("empty condition", "`condition`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).condition(Property.ofExpression("{{ '' }}")).build()),
+            Arguments.of("blank condition", "`condition`", (Function<String, Feed>) endpoint -> Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(endpoint)).from(List.of(record("a", Map.of("album", "x")))).condition(Property.ofValue("  ")).build())
         );
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("invalidProperties")
-    void invalidProperty(String name, String property, Property<Feed.Operation> operation, Property<Boolean> failOnError, String endpoint) throws Exception {
+    void invalidProperty(String name, String property, Function<String, Feed> task) throws Exception {
         try (var stub = VespaStub.start()) {
-            var task = Feed.builder()
-                .id(IdUtils.create())
-                .endpoint(Property.ofValue(endpoint.formatted(stub.endpoint())))
-                .operation(operation)
-                .failOnError(failOnError)
-                .from(List.of(record("a", Map.of("album", "x"))))
-                .build();
-
-            var e = assertThrows(IllegalArgumentException.class, () -> task.run(runContextFactory.of()));
+            var e = assertThrows(IllegalArgumentException.class, () -> task.apply(stub.endpoint()).run(runContextFactory.of()));
 
             assertThat(e.getMessage(), containsString(property));
+            assertThat(stub.seen(), is(empty()));
+        }
+    }
+
+    // a worker's run context carries the task, so core's RunContextProperty.as() checks the rendered value against @Min and @Max
+    @ParameterizedTest
+    @ValueSource(ints = {0, 4097})
+    void renderedMaxInFlightRefused(int value) throws Exception {
+        try (var stub = VespaStub.start()) {
+            var task = Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue(stub.endpoint())).from(List.of(record("a", Map.of("album", "x")))).maxInFlight(Property.ofExpression("{{ inputs.value }}")).build();
+            var runContext = TestsUtils.mockRunContext(runContextFactory, task, Map.of("value", value));
+
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(IllegalArgumentException.class, () -> task.run(runContext)));
+
+            assertThat(e.getCause().getMessage(), containsString("maxInFlight: must be"));
             assertThat(stub.seen(), is(empty()));
         }
     }
@@ -536,6 +553,7 @@ class FeedTest extends VespaContainer {
 
             assertThat(stub.seen(), hasSize(4));
             assertThat(stub.seen().stream().map(VespaStub.Seen::authorization).toList(), everyItem(is(List.of("Bearer feed-secret-token"))));
+            assertThat(stub.seen().stream().filter(s -> !handshake(s)).map(VespaStub.Seen::query).toList(), everyItem(allOf(not(containsString("create")), not(containsString("condition")))));
             assertThat(task.toString(), not(containsString("feed-secret-token")));
             assertThat(JacksonMapper.ofJson().writeValueAsString(output), not(containsString("feed-secret-token")));
             assertThat(logs.stream().map(ILoggingEvent::getFormattedMessage).toList(), everyItem(not(containsString("feed-secret-token"))));
@@ -589,6 +607,35 @@ class FeedTest extends VespaContainer {
     }
 
     @Test
+    void killWhileWaitingForASlot() throws Exception {
+        try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(60)))) {
+            var records = IntStream.range(0, 50).mapToObj(i -> (Map<String, Object>) record("feedtest-kill-slot-" + i, Map.of("album", "x"))).toList();
+            var task = Feed.builder().id(IdUtils.create()).endpoint(Property.ofValue(stub.endpoint())).maxInFlight(Property.ofValue(1)).from(records).build();
+            var run = CompletableFuture.runAsync(() -> {
+                try {
+                    task.run(runContextFactory.of());
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            await("one record in flight", Duration.ofSeconds(30), () -> {
+                if (stub.seen().stream().filter(s -> !preflight(s)).count() < 2) {
+                    throw new IllegalStateException("no record sent yet");
+                }
+                return null;
+            });
+
+            task.kill();
+            run.handle((ok, thrown) -> null).get(10, TimeUnit.SECONDS);
+            var seenAfterKill = stub.seen().size();
+            Thread.sleep(Duration.ofSeconds(1));
+
+            assertThat(stub.seen().size(), is(seenAfterKill));
+            assertThat(stub.seen().stream().filter(s -> !preflight(s)).count(), is(2L));
+        }
+    }
+
+    @Test
     void operationTimeout() throws Exception {
         try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}"), new VespaStub.Answer(200, "{}", Duration.ofSeconds(5)))) {
             var task = Feed.builder().id(IdUtils.create())
@@ -625,6 +672,188 @@ class FeedTest extends VespaContainer {
             .allowSelection(Property.ofValue(true))
             .build()
             .run(runContextFactory.of());
+    }
+
+    @Test
+    void createIfNotExists() throws Exception {
+        var task = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .createIfNotExists(Property.ofValue(true))
+            .from(List.of(Map.of("id", ID + "feedtest-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
+            .build();
+
+        var output = task.run(runContextFactory.of());
+
+        assertThat(document(PATH + "feedtest-upsert").get("fields").get("album").asText(), is("created"));
+        assertThat(output.getSuccessCount(), is(1L));
+        assertThat(output.getFailureCount(), is(0L));
+        delete(PATH + "feedtest-upsert");
+    }
+
+    @Test
+    void updateOfMissingDocumentWritesNothing() throws Exception {
+        var unset = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .from(List.of(Map.of("id", ID + "feedtest-no-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
+            .build();
+        var setFalse = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .createIfNotExists(Property.ofValue(false))
+            .from(List.of(Map.of("id", ID + "feedtest-no-upsert", "fields", Map.of("album", Map.of("assign", "created")))))
+            .build();
+
+        var unsetOutput = unset.run(runContextFactory.of());
+        var setFalseOutput = setFalse.run(runContextFactory.of());
+
+        assertThat(unsetOutput.getSuccessCount(), is(1L));
+        assertThat(setFalseOutput.getSuccessCount(), is(1L));
+        assertThat(status(PATH + "feedtest-no-upsert"), is(404));
+    }
+
+    static Stream<Arguments> conditionMetCases() {
+        return Stream.of(
+            Arguments.of(Feed.Operation.PUT, Map.of("artist", "feedtest a & b", "album", "after")),
+            Arguments.of(Feed.Operation.UPDATE, Map.of("album", Map.of("assign", "after"))),
+            Arguments.of(Feed.Operation.REMOVE, Map.of())
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("conditionMetCases")
+    void conditionMet(Feed.Operation operation, Map<String, Object> fields) throws Exception {
+        var key = "feedtest-condition-met-" + operation;
+        put(PATH + key, Map.of("artist", "feedtest a & b", "album", "before"));
+        var task = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(operation))
+            .condition(Property.ofValue("music.artist==\"feedtest a & b\""))
+            .from(List.of(record(key, fields)))
+            .build();
+
+        var output = task.run(runContextFactory.of());
+
+        assertThat(output.getSuccessCount(), is(1L));
+        if (operation == Feed.Operation.REMOVE) {
+            assertThat(status(PATH + key), is(404));
+        } else {
+            assertThat(document(PATH + key).get("fields").get("album").asText(), is("after"));
+            delete(PATH + key);
+        }
+    }
+
+    @Test
+    void conditionNotMet() throws Exception {
+        put(PATH + "feedtest-condition-yes", Map.of("artist", "feedtest condition", "album", "before", "year", 2000));
+        put(PATH + "feedtest-condition-no", Map.of("artist", "feedtest condition", "album", "before", "year", 1999));
+        var records = List.<Map<String, Object>>of(
+            record("feedtest-condition-yes", Map.of("album", Map.of("assign", "after"))),
+            record("feedtest-condition-no", Map.of("album", Map.of("assign", "after")))
+        );
+        var task = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .condition(Property.ofValue("music.year==2000"))
+            .failOnError(Property.ofValue(false))
+            .from(records)
+            .build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(document(PATH + "feedtest-condition-yes").get("fields").get("album").asText(), is("after"));
+        assertThat(document(PATH + "feedtest-condition-no").get("fields").get("album").asText(), is("before"));
+        assertThat(output.finalState().orElseThrow(() -> new AssertionError("no final state")), is(State.Type.WARNING));
+        assertThat(output.getSuccessCount(), is(1L));
+        assertThat(output.getFailureCount(), is(1L));
+        var failed = stored(runContext, output.getUri());
+        assertThat(failed, hasSize(1));
+        assertThat(failed.getFirst().get("record"), is(records.getLast()));
+        assertThat(failed.getFirst().get("error").toString(), allOf(containsString("`condition`"), containsString("Condition did not match document")));
+        removeAll(records);
+    }
+
+    @Test
+    void conditionNotMetFailsTheTask() throws Exception {
+        put(PATH + "feedtest-condition-fail-yes", Map.of("artist", "feedtest condition", "album", "before", "year", 2000));
+        put(PATH + "feedtest-condition-fail-no", Map.of("artist", "feedtest condition", "album", "before", "year", 1999));
+        var records = List.<Map<String, Object>>of(
+            record("feedtest-condition-fail-yes", Map.of("album", Map.of("assign", "after"))),
+            record("feedtest-condition-fail-no", Map.of("album", Map.of("assign", "after")))
+        );
+        var task = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .condition(Property.ofValue("music.year==2000"))
+            .from(records)
+            .build();
+
+        var e = assertThrows(IllegalStateException.class, () -> task.run(runContextFactory.of()));
+
+        assertThat(e.getMessage(), allOf(
+            containsString("1 records were fed and 1 failed"),
+            containsString(ID + "feedtest-condition-fail-no"),
+            containsString("`condition`"),
+            containsString("set `failOnError: false`")
+        ));
+        assertThat(document(PATH + "feedtest-condition-fail-yes").get("fields").get("album").asText(), is("after"));
+        removeAll(records);
+    }
+
+    @Test
+    void conditionOnMissingDocument() throws Exception {
+        var task = Feed.builder().id(IdUtils.create())
+            .endpoint(Property.ofValue(endpoint()))
+            .operation(Property.ofValue(Feed.Operation.UPDATE))
+            .condition(Property.ofValue("music.year==2000"))
+            .failOnError(Property.ofValue(false))
+            .from(List.of(record("feedtest-condition-missing", Map.of("album", Map.of("assign", "after")))))
+            .build();
+        var runContext = runContextFactory.of();
+
+        var output = task.run(runContext);
+
+        assertThat(status(PATH + "feedtest-condition-missing"), is(404));
+        assertThat(output.getFailureCount(), is(1L));
+        assertThat(stored(runContext, output.getUri()).getFirst().get("error").toString(), allOf(containsString("`condition`"), containsString("Document does not exist")));
+    }
+
+    @Test
+    void maxInFlight() throws Exception {
+        try (var stub = VespaStub.answering(new VespaStub.Answer(200, "{}", Duration.ofMillis(300)))) {
+            var records = IntStream.range(0, 23)
+                .mapToObj(i -> i % 8 == 3 ? Map.<String, Object>of("fields", Map.of("album", "x")) : record("feedtest-in-flight-" + i, Map.of("album", "x")))
+                .toList();
+            var task = Feed.builder().id(IdUtils.create())
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .maxInFlight(Property.ofValue(2))
+                .failOnError(Property.ofValue(false))
+                .from(records)
+                .build();
+
+            var output = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> task.run(runContextFactory.of()));
+
+            assertThat(stub.mostAnswering().get(), is(2));
+            assertThat(output.getSuccessCount(), is(20L));
+            assertThat(output.getFailureCount(), is(3L));
+        }
+    }
+
+    @Test
+    void maxInFlightBounds() {
+        for (var refused : List.of(0, -1, 4097)) {
+            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).from(List.of(record("feedtest-bounds", Map.of("album", "x")))).maxInFlight(Property.ofValue(refused)).build());
+
+            assertThat(String.valueOf(refused), violations.isPresent(), is(true));
+            assertThat(String.valueOf(refused), violations.get().getMessage(), containsString("maxInFlight"));
+        }
+        for (var accepted : List.of(1, 4096)) {
+            var violations = modelValidator.isValid(Feed.builder().id(IdUtils.create()).type(Feed.class.getName()).endpoint(Property.ofValue("http://localhost:8080")).from(List.of(record("feedtest-bounds", Map.of("album", "x")))).maxInFlight(Property.ofValue(accepted)).build());
+
+            assertThat(String.valueOf(accepted), violations.isEmpty(), is(true));
+        }
     }
 
     private static List<Map<String, Object>> badBatch(String name) {

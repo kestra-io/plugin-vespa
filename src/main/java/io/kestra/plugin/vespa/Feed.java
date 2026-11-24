@@ -23,6 +23,8 @@ import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.utils.Rethrow;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
@@ -120,13 +122,48 @@ import java.util.concurrent.atomic.AtomicReference;
                     type: io.kestra.plugin.core.log.Log
                     message: "{{ outputs.update.failureCount }} updates failed, see {{ outputs.update.uri ?? 'nothing' }}"
                 """
+        ),
+        @Example(
+            title = "Upsert documents, creating the ones that don't exist yet, and update only those still in stock.",
+            full = true,
+            code = """
+                id: vespa_feed_upsert
+                namespace: company.team
+
+                tasks:
+                  - id: upsert
+                    type: io.kestra.plugin.vespa.Feed
+                    endpoint: "{{ secret('VESPA_ENDPOINT') }}"
+                    token: "{{ secret('VESPA_TOKEN') }}"
+                    operation: UPDATE
+                    createIfNotExists: true
+                    namespace: mynamespace
+                    documentType: music
+                    from:
+                      - id: kind-of-blue
+                        fields:
+                          stock:
+                            assign: 3
+
+                  - id: reprice
+                    type: io.kestra.plugin.vespa.Feed
+                    endpoint: "{{ secret('VESPA_ENDPOINT') }}"
+                    token: "{{ secret('VESPA_TOKEN') }}"
+                    operation: UPDATE
+                    condition: "music.stock > 0"
+                    failOnError: false
+                    namespace: mynamespace
+                    documentType: music
+                    from:
+                      - id: kind-of-blue
+                        fields:
+                          price:
+                            assign: 9.99
+                """
         )
     }
 )
 public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>, Data.From {
-    // the client holds a caller back at its own limit, except for repeated operations on one document ID, which it queues without limit
-    private static final int IN_FLIGHT = 4096;
-
     @Schema(
         title = Data.From.TITLE,
         description = Data.From.DESCRIPTION + """
@@ -145,7 +182,8 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         description = """
             `PUT` (default) writes the whole document, replacing one with the same ID. `UPDATE` changes fields of an \
             existing document, with `fields` in Vespa's update format, like `{"album": {"assign": "Kind of Blue"}}`; \
-            Vespa accepts an update of a missing document and changes nothing, so it counts as a success. A retried \
+            Vespa accepts an update of a missing document and changes nothing, so it counts as a success; set \
+            `createIfNotExists: true` to create it instead. A retried \
             `UPDATE` with `increment` applies twice. \
             `REMOVE` deletes the document; removing a missing one succeeds."""
     )
@@ -181,6 +219,38 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
     @PluginProperty(group = "reliability")
     private Property<Boolean> failOnError = Property.ofValue(true);
 
+    @Schema(
+        title = "Create the document when it doesn't exist",
+        description = """
+            `true` makes an `UPDATE` of a missing document create it first (an upsert). With `condition`, a `PUT` or \
+            `UPDATE` of a missing document is written without checking the condition. No effect on `REMOVE`, or on `PUT` \
+            without `condition`. Default `false`."""
+    )
+    @Builder.Default
+    @PluginProperty(group = "reliability")
+    private Property<Boolean> createIfNotExists = Property.ofValue(false);
+
+    @Schema(
+        title = "Write each record only if its document matches",
+        description = """
+            Vespa's test-and-set condition, in its document selection language with the document type before the \
+            field, like `music.year==2000`. A record whose document doesn't match, or doesn't exist, is a failed record \
+            (see `failOnError`), unless `createIfNotExists` writes the missing document. One condition for the whole run."""
+    )
+    @PluginProperty(group = "reliability")
+    private Property<String> condition;
+
+    @Schema(
+        title = "Most records waiting for Vespa's answer at one time",
+        description = """
+            From 1 to 4096, default 4096 (the feed client's own ceiling). The client still adapts how many it sends \
+            below this value; lower it to put less load on Vespa. It doesn't change how much of `from` the worker \
+            holds in memory."""
+    )
+    @Builder.Default
+    @PluginProperty(group = "advanced")
+    private Property<@Min(1) @Max(4096) Integer> maxInFlight = Property.ofValue(4096);
+
     @Getter(AccessLevel.NONE)
     @EqualsAndHashCode.Exclude
     @ToString.Exclude
@@ -197,7 +267,16 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         var rFailOnError = rendered("failOnError", "set it to true or false", () -> runContext.render(failOnError).as(Boolean.class).orElse(true));
         var rNamespace = runContext.render(namespace).as(String.class).orElse(null);
         var rDocumentType = runContext.render(documentType).as(String.class).orElse(null);
-        var parameters = OperationParameters.empty().timeout(runContext.render(getReadTimeout()).as(Duration.class).orElse(Duration.ofMinutes(5)));
+        var rCreateIfNotExists = rendered("createIfNotExists", "set it to true or false", () -> runContext.render(createIfNotExists).as(Boolean.class).orElse(false));
+        var rMaxInFlight = rendered("maxInFlight", "set it to a number from 1 to 4096", () -> runContext.render(maxInFlight).as(Integer.class).orElse(4096));
+        var rCondition = runContext.render(condition).as(String.class).orElse(null);
+        var parameters = OperationParameters.empty().timeout(runContext.render(getReadTimeout()).as(Duration.class).orElse(Duration.ofMinutes(5))).createIfNonExistent(rCreateIfNotExists);
+        if (rCondition != null) {
+            if (rCondition.isBlank()) {
+                throw new IllegalArgumentException("The `condition` property is blank; remove it, or give a Vespa document selection, like music.year==2000.");
+            }
+            parameters = parameters.testAndSetCondition(rCondition);
+        }
         var rToken = runContext.render(getToken()).as(String.class).orElse("");
         var rEndpoint = endpoint(runContext);
         if (!URI.create(rEndpoint).getRawPath().isEmpty()) {
@@ -212,7 +291,8 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         var failedFile = runContext.workingDir().createTempFile(".ion");
         var failures = new Failures(new BufferedOutputStream(Files.newOutputStream(failedFile), FileSerde.BUFFER_SIZE));
         var succeeded = new AtomicLong();
-        var inFlight = new Semaphore(IN_FLIGHT);
+        // the client holds a caller back at its own limit, except for repeated operations on one document ID, which it queues without limit
+        var inFlight = new Semaphore(rMaxInFlight);
         var client = client(rEndpoint, rToken);
         // the client waits up to a minute for its result threads; a kill must return at once
         killable.set(() -> Thread.ofVirtual().start(() -> client.close(false)));
@@ -222,32 +302,34 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
                 if (isKilled.get() || failures.writeError().isPresent()) {
                     break;
                 }
+                inFlight.acquire();
                 CompletableFuture<Result> sent;
                 try {
                     sent = send(client, rOperation, record, rNamespace, rDocumentType, parameters);
                 } catch (IllegalArgumentException invalid) {
+                    inFlight.release();
                     failures.add(record, invalid.getMessage());
                     continue;
                 } catch (IllegalStateException closed) {
+                    inFlight.release();
                     if (isKilled.get()) {
                         break;
                     }
                     throw closed;
                 }
-                inFlight.acquire();
                 sent.whenComplete((result, thrown) -> {
                     try {
                         if (thrown == null && result.type() == Result.Type.success) {
                             succeeded.incrementAndGet();
                         } else {
-                            failures.add(record, thrown == null ? result.resultMessage().orElse(result.type().name()) : error(thrown));
+                            failures.add(record, thrown == null ? refused(result) : error(thrown));
                         }
                     } finally {
                         inFlight.release();
                     }
                 });
             }
-            inFlight.acquire(IN_FLIGHT);
+            inFlight.acquire(rMaxInFlight);
         } finally {
             client.close(!isKilled.get());
         }
@@ -368,6 +450,11 @@ public class Feed extends AbstractVespaTask implements RunnableTask<Feed.Output>
         }
         documentPath(full);
         return DocumentId.of(full);
+    }
+
+    private static String refused(Result result) {
+        var message = result.resultMessage().orElse(result.type().name());
+        return result.type() == Result.Type.conditionNotMet ? "The `condition` was not met, or the document doesn't exist: " + message : message;
     }
 
     // the client gives up when Vespa's own limit ends, so Vespa's answer can be lost while the write landed
