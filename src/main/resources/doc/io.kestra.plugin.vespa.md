@@ -72,5 +72,8 @@ the document IDs at that value, in the namespace KV store, and asks Vespa only f
 first, through Vespa's `recall` and `sorting` parameters, so the YQL is sent as written. A document written later
 with a lower value is never delivered, and a removed document fires nothing. The first poll delivers what already
 matches, up to `hits` (default 100) per poll, so a large backlog arrives over several polls. Each hit must carry its
-document ID and the `watermarkField` value, as `select *` does; the YQL can't have an `order by` or an `offset`. More
-documents at one value than `hits` fails the poll, with a message to raise `hits`.
+document ID and the `watermarkField` value, as `select *` does; the YQL can't have an `order by`, an `offset` or a
+`limit`. Keep the field fine-grained (like milliseconds): once more documents share its highest value than Vespa's
+`maxHits` (400 by default) leaves room for, Vespa refuses the poll. If Vespa searched only part of the corpus, the
+poll delivers nothing and the next one tries again. With `allowConcurrent: true` a slow poll can overlap the next one
+and deliver the same documents twice.

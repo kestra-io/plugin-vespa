@@ -1,6 +1,7 @@
 package io.kestra.plugin.vespa;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.Flow;
@@ -16,10 +17,12 @@ import org.junit.jupiter.api.Test;
 import java.net.URI;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static io.kestra.core.tenant.TenantService.MAIN_TENANT;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -125,37 +128,47 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
-    void tooManyAtOneValueFails() throws Exception {
+    void tieLargerThanAPageDrainsOverPolls() throws Exception {
         var genre = genre();
         feed("a", genre, 10);
         feed("b", genre, 10);
         feed("c", genre, 10);
         var trigger = trigger(genre).hits(Property.ofValue(2)).build();
 
-        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+        var first = poll(trigger);
+        var second = poll(trigger);
 
-        assertThat(error.getMessage(), allOf(containsString("added_at"), containsString("10"), containsString("hits")));
-        assertThat(stored(trigger, "flow"), is(Optional.empty()));
+        assertThat(first, hasSize(2));
+        assertThat(second, hasSize(1));
+        assertThat(Stream.concat(first.stream(), second.stream()).toList(), containsInAnyOrder(key("a"), key("b"), key("c")));
+        assertThat(poll(trigger), empty());
     }
 
     @Test
-    void fullBoundaryFailsBeforeRequest() throws Exception {
-        var trigger = trigger(genre()).hits(Property.ofValue(2)).endpoint(Property.ofValue("http://localhost:1")).build();
-        store(trigger, "flow", "{\"field\":\"added_at\",\"value\":10,\"ids\":[\"id:mynamespace:music::x\",\"id:mynamespace:music::y\"]}");
+    void requestPastMaxHitsFails() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        var trigger = trigger(genre).hits(Property.ofValue(2)).build();
+        var ids = IntStream.range(0, 399).mapToObj(i -> "\"id:mynamespace:music::gone" + i + "\"").collect(Collectors.joining(","));
+        var watermark = "{\"field\":\"added_at\",\"value\":10,\"ids\":[" + ids + "]}";
+        store(trigger, "flow", watermark);
 
-        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+        var error = assertThrows(HttpClientResponseException.class, () -> evaluate(trigger, "flow"));
 
-        assertThat(error.getMessage(), allOf(containsString("added_at"), containsString("10"), containsString("hits")));
+        assertThat(error.getMessage(), allOf(containsString("400"), containsString("401 hits requested, configured limit: 400")));
+        assertThat(stored(trigger, "flow"), is(Optional.of(watermark)));
     }
 
     @Test
     void unreadableWatermarkFails() throws Exception {
-        var trigger = trigger(genre()).build();
-        store(trigger, "flow", "not a watermark");
+        for (var value : List.of("not a watermark", "{\"field\":\"added_at\"}", "{\"field\":\"added_at\",\"value\":10}", "{\"value\":10,\"ids\":[]}")) {
+            var trigger = trigger(genre()).build();
+            store(trigger, "flow", value);
 
-        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+            var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"), value);
 
-        assertThat(error.getMessage(), allOf(containsString(Trigger.watermarkKey("flow", trigger.getId())), containsString("Delete")));
+            assertThat(value, error.getMessage(), allOf(containsString(Trigger.watermarkKey("flow", trigger.getId())), containsString("Delete")));
+        }
     }
 
     @Test
@@ -173,19 +186,21 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
-    void rejectsOrderByOffsetAndOwnParameters() {
-        var cases = new HashMap<String, Trigger>();
-        cases.put("order by", trigger(genre()).yql(Property.ofValue("select * from music where true ORDER  BY year")).build());
-        cases.put("offset", trigger(genre()).yql(Property.ofValue("select * from music where true limit 5 offset 2")).build());
-        for (var parameter : List.of("recall", "Sorting", "ranking.sorting", "hits", "count", "offset", "start")) {
-            cases.put(parameter, trigger(genre()).parameters(Property.ofValue(Map.of(parameter, "x"))).build());
+    void rejectsOrderByOffsetLimitAndOwnParameters() {
+        var cases = new ArrayList<Map.Entry<Trigger, String>>();
+        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true ORDER  BY year")).build(), "order by"));
+        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true limit 5 offset 2")).build(), "offset"));
+        cases.add(Map.entry(trigger(genre()).yql(Property.ofValue("select * from music where true LIMIT 5")).build(), "limit"));
+        for (var parameter : List.of("recall", "Sorting", "ranking.sorting", "sorting.degrading", "hits", "count", "offset", "start")) {
+            cases.add(Map.entry(trigger(genre()).parameters(Property.ofValue(Map.of(parameter, "x"))).build(), parameter));
         }
-        cases.put("ranking.sorting", trigger(genre()).parameters(Property.ofValue(Map.of("ranking", Map.of("sorting", "x")))).build());
+        cases.add(Map.entry(trigger(genre()).parameters(Property.ofValue(Map.of("ranking", Map.of("sorting", "x")))).build(), "ranking.sorting"));
 
-        cases.forEach((name, trigger) -> {
-            var error = assertThrows(IllegalArgumentException.class, () -> evaluate(trigger, "flow"), name);
-            assertThat(name, error.getMessage(), containsStringIgnoringCase(name.replace("  ", " ")));
-        });
+        for (var testCase : cases) {
+            var expected = testCase.getValue();
+            var error = assertThrows(IllegalArgumentException.class, () -> evaluate(testCase.getKey(), "flow"), expected);
+            assertThat(expected, error.getMessage(), containsStringIgnoringCase("'" + expected + "'"));
+        }
     }
 
     @Test
@@ -275,8 +290,8 @@ class TriggerTest extends VespaContainer {
     @Test
     void changingTheFieldStartsAgain() throws Exception {
         var genre = genre();
-        put(PATH + "a", Map.of("album", "A", "genre", genre, "added_at", 10, "year", 2001));
-        put(PATH + "b", Map.of("album", "B", "genre", genre, "added_at", 20, "year", 2000));
+        put(PATH + "a", Map.of("album", "A", "genre", genre, "added_at", 10, "year", 5));
+        put(PATH + "b", Map.of("album", "B", "genre", genre, "added_at", 20, "year", 3));
         fed.addAll(List.of("a", "b"));
         var id = "trigger_" + IdUtils.create();
         assertThat(poll(trigger(genre).id(id).build()), contains(key("a"), key("b")));
@@ -285,6 +300,76 @@ class TriggerTest extends VespaContainer {
 
         assertThat(poll(byYear), contains(key("b"), key("a")));
         assertThat(poll(byYear), empty());
+    }
+
+    @Test
+    void oneHitPerPoll() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        feed("b", genre, 20);
+        feed("c", genre, 30);
+        var trigger = trigger(genre).hits(Property.ofValue(1)).build();
+
+        assertThat(poll(trigger), contains(key("a")));
+        assertThat(poll(trigger), contains(key("b")));
+        assertThat(poll(trigger), contains(key("c")));
+        assertThat(poll(trigger), empty());
+    }
+
+    @Test
+    void deliversAtMostHitsWhenStoredDocumentsAreGone() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        feed("b", genre, 20);
+        feed("c", genre, 30);
+        feed("d", genre, 40);
+        var trigger = trigger(genre).hits(Property.ofValue(2)).build();
+        store(trigger, "flow", "{\"field\":\"added_at\",\"value\":10,\"ids\":[\"id:mynamespace:music::gone1\",\"id:mynamespace:music::gone2\"]}");
+
+        assertThat(poll(trigger), contains(key("a"), key("b")));
+        assertThat(poll(trigger), contains(key("c"), key("d")));
+        assertThat(poll(trigger), empty());
+    }
+
+    @Test
+    void partialAnswerFailsAndKeepsWatermark() throws Exception {
+        var hit = "{\"id\":\"id:mynamespace:music::p\",\"relevance\":1.0,\"fields\":{\"added_at\":50}}";
+        var withErrors = "{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"coverage\":100,\"full\":true},"
+            + "\"errors\":[{\"code\":12,\"summary\":\"Timed out\",\"message\":\"content node 1 timed out\"}],\"children\":[" + hit + "]}}";
+        var notFull = "{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"coverage\":50,\"full\":false,"
+            + "\"degraded\":{\"timeout\":true}},\"children\":[" + hit + "]}}";
+        for (var answer : List.of(withErrors, notFull)) {
+            try (var stub = VespaStub.answering(answer)) {
+                var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
+                var watermark = "{\"field\":\"added_at\",\"value\":10,\"ids\":[\"id:mynamespace:music::x\"]}";
+                store(trigger, "flow", watermark);
+
+                var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"), answer);
+
+                assertThat(answer, error.getMessage(), containsString("only part of"));
+                assertThat(answer, stored(trigger, "flow"), is(Optional.of(watermark)));
+            }
+        }
+    }
+
+    @Test
+    void hitWithoutFieldsFails() throws Exception {
+        try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"full\":true},\"children\":[{\"id\":\"id:mynamespace:music::p\",\"relevance\":1.0}]}}")) {
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
+
+            var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
+
+            assertThat(error.getMessage(), allOf(containsString("added_at"), containsString("id:mynamespace:music::p")));
+        }
+    }
+
+    @Test
+    void requiredPropertiesFail() {
+        var noYql = trigger(genre()).yql(Property.ofValue(" ")).build();
+        var blankField = trigger(genre()).watermarkField(Property.ofValue(" ")).build();
+
+        assertThat(assertThrows(IllegalArgumentException.class, () -> evaluate(noYql, "flow")).getMessage(), containsString("'yql'"));
+        assertThat(assertThrows(IllegalArgumentException.class, () -> evaluate(blankField, "flow")).getMessage(), containsString("'watermarkField'"));
     }
 
     @Test
