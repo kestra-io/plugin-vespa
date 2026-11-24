@@ -284,7 +284,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     }
 
     // nested maps are read as dotted names, so `model: {queryString: x}` is checked like `model.queryString`
-    private static Stream<String> dottedNames(String prefix, Map<?, ?> parameters) {
+    static Stream<String> dottedNames(String prefix, Map<?, ?> parameters) {
         return parameters.entrySet().stream().flatMap(entry -> entry.getValue() instanceof Map<?, ?> nested
             ? dottedNames(prefix + entry.getKey() + ".", nested)
             : Stream.of(prefix + entry.getKey()));

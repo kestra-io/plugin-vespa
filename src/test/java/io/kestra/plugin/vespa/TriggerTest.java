@@ -1,14 +1,18 @@
 package io.kestra.plugin.vespa;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.core.type.TypeReference;
-import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.DefaultRunContext;
+import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.FileSerde;
+import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.storages.kv.KVValueAndMetadata;
 import io.kestra.core.utils.IdUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -153,9 +157,9 @@ class TriggerTest extends VespaContainer {
         var watermark = "{\"field\":\"added_at\",\"value\":10,\"ids\":[" + ids + "]}";
         store(trigger, "flow", watermark);
 
-        var error = assertThrows(HttpClientResponseException.class, () -> evaluate(trigger, "flow"));
+        var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
 
-        assertThat(error.getMessage(), allOf(containsString("400"), containsString("401 hits requested, configured limit: 400")));
+        assertThat(error.getMessage(), allOf(containsString("399"), containsString("added_at = 10"), containsString("401"), containsString("maxHits")));
         assertThat(stored(trigger, "flow"), is(Optional.of(watermark)));
     }
 
@@ -217,18 +221,73 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
-    void hitWithoutWatermarkValueFails() throws Exception {
+    void nonNumericFieldDeliversNothing() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        var aString = trigger(genre).watermarkField(Property.ofValue("genre")).build();
+
+        assertThat(evaluate(aString, "flow"), is(Optional.empty()));
+    }
+
+    @Test
+    void decimalWatermarkValueFails() throws Exception {
+        for (var decimal : List.of("10.5", "10.0")) {
+            var hit = "{\"id\":\"id:mynamespace:music::p\",\"relevance\":1.0,\"fields\":{\"added_at\":" + decimal + "}}";
+            try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"full\":true},\"children\":[" + hit + "]}}")) {
+                var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
+
+                var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"), decimal);
+
+                assertThat(decimal, error.getMessage(), allOf(containsString("added_at"), containsString("id:mynamespace:music::p")));
+            }
+        }
+    }
+
+    @Test
+    void epochMillisecondValues() throws Exception {
+        var genre = genre();
+        feed("a", genre, 1768780800000L);
+        feed("b", genre, 1768867200000L);
+        var trigger = trigger(genre).build();
+
+        assertThat(poll(trigger), contains(key("a"), key("b")));
+
+        feed("c", genre, 1768953600000L);
+
+        assertThat(poll(trigger), contains(key("c")));
+        assertThat(poll(trigger), empty());
+    }
+
+    @Test
+    void documentWithoutValueIsNeverDelivered() throws Exception {
         var genre = genre();
         put(PATH + "nodate", Map.of("album", "No date", "genre", genre));
         fed.add("nodate");
-        var missing = trigger(genre).build();
-        var notANumber = trigger(genre).watermarkField(Property.ofValue("genre")).build();
+        feed("a", genre, 10);
+        var trigger = trigger(genre).hits(Property.ofValue(1)).build();
 
-        var missingError = assertThrows(IllegalStateException.class, () -> evaluate(missing, "flow"));
-        var notANumberError = assertThrows(IllegalStateException.class, () -> evaluate(notANumber, "flow"));
+        assertThat(poll(trigger), contains(key("a")));
+        assertThat(poll(trigger), empty());
+    }
 
-        assertThat(missingError.getMessage(), allOf(containsString("added_at"), containsString(key("nodate"))));
-        assertThat(notANumberError.getMessage(), allOf(containsString("genre"), containsString(key("nodate"))));
+    @Test
+    void hitWithoutValueIsSkippedWithAWarning() throws Exception {
+        var noValue = "{\"id\":\"id:mynamespace:music::nodate\",\"relevance\":1.0,\"fields\":{\"album\":\"No date\"}}";
+        var noFields = "{\"id\":\"id:mynamespace:music::nofields\",\"relevance\":1.0}";
+        var dated = "{\"id\":\"id:mynamespace:music::dated\",\"relevance\":1.0,\"fields\":{\"added_at\":20}}";
+        try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":3},\"coverage\":{\"full\":true},\"children\":[" + noValue + "," + noFields + "," + dated + "]}}")) {
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
+            var context = context(trigger, "flow");
+            var logs = capture(context.getKey().getRunContext());
+
+            var execution = trigger.evaluate(context.getKey(), context.getValue()).orElseThrow();
+
+            assertThat(keys(execution), contains("id:mynamespace:music::dated"));
+            assertThat(warnings(logs), hasItems(
+                allOf(containsString("id:mynamespace:music::nodate"), containsString("added_at")),
+                allOf(containsString("id:mynamespace:music::nofields"), containsString("added_at"))
+            ));
+        }
     }
 
     @Test
@@ -303,6 +362,56 @@ class TriggerTest extends VespaContainer {
     }
 
     @Test
+    void hitsBelowOneFails() throws Exception {
+        try (var stub = VespaStub.start()) {
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).hits(Property.ofExpression("{{ 1 - 1 }}")).build();
+
+            var error = assertThrows(Exception.class, () -> evaluate(trigger, "flow"));
+
+            assertThat(error.getMessage(), allOf(containsString("hits"), containsString("1")));
+            assertThat(stub.seen().stream().filter(seen -> seen.path().startsWith("/search/")).toList(), empty());
+        }
+    }
+
+    @Test
+    void refedWithAHigherValueIsDeliveredAgain() throws Exception {
+        var genre = genre();
+        feed("a", genre, 10);
+        var trigger = trigger(genre).build();
+        assertThat(poll(trigger), contains(key("a")));
+
+        feed("a", genre, 20);
+
+        assertThat(poll(trigger), contains(key("a")));
+        assertThat(poll(trigger), empty());
+    }
+
+    @Test
+    void sendsSortingAndRecall() throws Exception {
+        var hit = "{\"id\":\"id:mynamespace:music::p\",\"relevance\":1.0,\"fields\":{\"added_at\":50}}";
+        try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"full\":true},\"children\":[" + hit + "]}}")) {
+            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
+
+            evaluate(trigger, "flow");
+            evaluate(trigger, "flow");
+
+            var bodies = new ArrayList<Map<String, Object>>();
+            for (var seen : stub.seen()) {
+                if (seen.path().startsWith("/search/")) {
+                    bodies.add(JacksonMapper.toMap(seen.body()));
+                }
+            }
+            assertThat(bodies, hasSize(2));
+            for (var body : bodies) {
+                assertThat(body.get("sorting"), is("+added_at"));
+                assertThat(body.get("sorting.degrading"), is(false));
+            }
+            assertThat(bodies.getFirst().get("recall"), is("+added_at:[-9223372036854775808;]"));
+            assertThat(bodies.get(1).get("recall"), is("+added_at:[50;]"));
+        }
+    }
+
+    @Test
     void oneHitPerPoll() throws Exception {
         var genre = genre();
         feed("a", genre, 10);
@@ -352,16 +461,6 @@ class TriggerTest extends VespaContainer {
         }
     }
 
-    @Test
-    void hitWithoutFieldsFails() throws Exception {
-        try (var stub = VespaStub.answering("{\"root\":{\"id\":\"toplevel\",\"fields\":{\"totalCount\":1},\"coverage\":{\"full\":true},\"children\":[{\"id\":\"id:mynamespace:music::p\",\"relevance\":1.0}]}}")) {
-            var trigger = trigger(genre()).endpoint(Property.ofValue(stub.endpoint())).build();
-
-            var error = assertThrows(IllegalStateException.class, () -> evaluate(trigger, "flow"));
-
-            assertThat(error.getMessage(), allOf(containsString("added_at"), containsString("id:mynamespace:music::p")));
-        }
-    }
 
     @Test
     void requiredPropertiesFail() {
@@ -456,5 +555,16 @@ class TriggerTest extends VespaContainer {
     private Optional<String> stored(Trigger trigger, String flowId) throws Exception {
         var value = context(trigger, flowId).getKey().getRunContext().namespaceKv(NAMESPACE).getValue(Trigger.watermarkKey(flowId, trigger.getId()));
         return value.map(v -> (String) v.value());
+    }
+
+    private static ListAppender<ILoggingEvent> capture(RunContext runContext) {
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        ((Logger) runContext.logger()).addAppender(appender);
+        return appender;
+    }
+
+    private static List<String> warnings(ListAppender<ILoggingEvent> logs) {
+        return logs.list.stream().filter(e -> e.getLevel().levelStr.equals("WARN")).map(ILoggingEvent::getFormattedMessage).toList();
     }
 }
