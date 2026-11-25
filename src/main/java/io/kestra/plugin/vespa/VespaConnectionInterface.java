@@ -91,7 +91,19 @@ public interface VespaConnectionInterface {
             .build();
 
         var body = new AtomicReference<String>();
-        var response = client.request(httpRequest, answer -> body.set(read(answer.getBody(), httpRequest)));
+        var response = client.request(httpRequest, answer -> {
+            try {
+                body.set(read(answer.getBody(), httpRequest));
+            } catch (IllegalStateException failed) {
+                // closing the answer would read the rest of the body, which may never end; closing the client drops the connection instead
+                try {
+                    client.close();
+                } catch (IOException e) {
+                    failed.addSuppressed(e);
+                }
+                throw failed;
+            }
+        });
         return HttpResponse.<String>builder()
             .status(response.getStatus())
             .headers(response.getHeaders())

@@ -20,6 +20,7 @@ import java.util.Map;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class VespaConnectionTest extends VespaContainer {
     @Inject
@@ -121,8 +122,9 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void answerOverTheCapFails() throws Exception {
-        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(100L * 1024 * 1024 + 1))) {
-            var e = assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint() + "/prefix"), get("/search/?yql=secret")));
+        // a body that never ends: the read must stop at the cap, not drain the rest
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(Long.MAX_VALUE))) {
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint() + "/prefix"), get("/search/?yql=secret"))));
 
             assertThat(e.getMessage(), allOf(
                 containsString("104857600 bytes"),
