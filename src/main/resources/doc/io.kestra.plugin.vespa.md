@@ -22,7 +22,8 @@ Rows keep Vespa's hit shape: `id`, `relevance` and the document under `fields`, 
 `{{ outputs.search.rows[0].fields.album }}`. `fetchType` picks `FETCH` (rows, default), `FETCH_ONE` (first row),
 `STORE` (the rows in an ION file in Kestra's internal storage, returned as `uri`, for the next task to read) or `NONE`
 (only `totalCount`). Vespa returns 10 hits by default and refuses more than 400 hits or an offset over 1000
-unless the application raises its limits.
+unless the application raises its limits. The plugin reads at most 32 MiB of any Vespa answer, in every task and the
+trigger, and fails on a bigger one: ask for fewer `hits` or summary fields.
 
 `Get` reads one document by its full ID (`documentId`, like `id:mynamespace:music::kind-of-blue`, or with a
 `n=<number>` or `g=<group>` part) from Vespa's [document API](https://docs.vespa.ai/en/reference/document-v1-api-reference.html)

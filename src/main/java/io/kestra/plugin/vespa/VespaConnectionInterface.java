@@ -18,8 +18,8 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.net.SocketTimeoutException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -82,7 +82,7 @@ public interface VespaConnectionInterface {
     }
 
     /**
-     * Sends a request whose URI is a path and query relative to the endpoint; any answer other than 2xx throws with its status and body.
+     * Sends a request whose URI is a path and query relative to the endpoint. A non-2xx answer within the cap throws {@code HttpClientResponseException} with its status and body.
      * An answer that is cut off, stops for longer than the read timeout or is larger than the cap leaves {@code client} closed.
      */
     default HttpResponse<String> request(RunContext runContext, HttpClient client, HttpRequest request)
