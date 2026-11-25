@@ -112,10 +112,42 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void endpointNotAnHttpUrl() {
-        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1", "http://:8080", "http://localhost:abc", "http://u:pw@localhost", "http://u@localhost")) {
+        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1", "http://:8080", "http://localhost:abc", "http://u:pw@localhost", "http://u@localhost", "http://a^b:8080", "http://h:8080/%zz", "http://[zz]:8080", "http://a|b", "http://h/x{y}")) {
             var e = assertThrows(IllegalArgumentException.class, () -> send(probe(invalid), get("/search/")), invalid);
 
             assertThat(e.getMessage(), containsString("got: '" + invalid + "'"));
+        }
+    }
+
+    @Test
+    void answerOverTheCapFails() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(100L * 1024 * 1024 + 1))) {
+            var e = assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint() + "/prefix"), get("/search/?yql=secret")));
+
+            assertThat(e.getMessage(), allOf(
+                containsString("104857600 bytes"),
+                containsString("GET /prefix/search/"),
+                not(containsString("secret")),
+                containsString("hits")
+            ));
+        }
+    }
+
+    @Test
+    void answerAtTheCapIsRead() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(100L * 1024 * 1024))) {
+            var response = send(probe(stub.endpoint()), get("/search/"));
+
+            assertThat(response.getBody().length(), is(100 * 1024 * 1024));
+        }
+    }
+
+    @Test
+    void answerCutOffFails() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.cut(1024))) {
+            var e = assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint()), get("/search/")));
+
+            assertThat(e.getMessage(), startsWith("Reading Vespa's answer to GET /search/ failed: "));
         }
     }
 

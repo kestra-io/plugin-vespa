@@ -15,8 +15,13 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import org.apache.commons.lang3.StringUtils;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 /**
@@ -85,7 +90,32 @@ public interface VespaConnectionInterface {
             .body(request.getBody())
             .build();
 
-        return client.request(httpRequest, String.class);
+        var body = new AtomicReference<String>();
+        var response = client.request(httpRequest, answer -> body.set(read(answer.getBody(), httpRequest)));
+        return HttpResponse.<String>builder()
+            .status(response.getStatus())
+            .headers(response.getHeaders())
+            .endpointDetail(response.getEndpointDetail())
+            .request(response.getRequest())
+            .body(body.get())
+            .build();
+    }
+
+    // read with a cap, so a wrong endpoint can't fill the worker's memory
+    private static String read(InputStream body, HttpRequest request) {
+        if (body == null) {
+            return null;
+        }
+        var max = 100 * 1024 * 1024;
+        try {
+            var bytes = body.readNBytes(max + 1);
+            if (bytes.length > max) {
+                throw new IllegalStateException("Vespa's answer to %s %s is larger than %d bytes; ask for less, like a lower `hits` or fewer fields in the summary.".formatted(request.getMethod(), request.getUri().getRawPath(), max));
+            }
+            return new String(bytes, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("Reading Vespa's answer to %s %s failed: %s; check that `endpoint` points to Vespa and try again.".formatted(request.getMethod(), request.getUri().getRawPath(), e.getMessage()), e);
+        }
     }
 
     /**
@@ -94,9 +124,18 @@ public interface VespaConnectionInterface {
     default String endpoint(RunContext runContext) throws IllegalVariableEvaluationException {
         var rEndpoint = runContext.render(getEndpoint()).as(String.class).orElse("");
         // a query would end up before the request path, so only scheme, host, port and an optional path prefix are allowed
-        if (!rEndpoint.matches("(?i)https?://(\\[[^]]+]|[^/?#@:\\s\\[\\]]+)(:\\d+)?(/[^?#\\s]*)?")) {
+        if (!rEndpoint.matches("(?i)https?://(\\[[^]]+]|[^/?#@:\\s\\[\\]]+)(:\\d+)?(/[^?#\\s]*)?") || !parses(rEndpoint)) {
             throw new IllegalArgumentException("The Vespa endpoint must be an http or https URL, like http://localhost:8080, got: '%s'.".formatted(rEndpoint));
         }
         return StringUtils.stripEnd(rEndpoint, "/");
+    }
+
+    private static boolean parses(String rEndpoint) {
+        try {
+            new URI(rEndpoint);
+            return true;
+        } catch (URISyntaxException e) {
+            return false;
+        }
     }
 }

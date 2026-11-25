@@ -6,6 +6,7 @@ import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.core.utils.IdUtils;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,21 @@ class GetTest extends VespaContainer {
         assertThat(output.getDocument(), is(JacksonMapper.ofJson().convertValue(expected.get("fields"), new TypeReference<LinkedHashMap<String, Object>>() {})));
         assertThat(output.getDocument(), hasEntry("album", "Kind of Blue"));
         assertThat(output.getDocument().get("embedding"), is(instanceOf(Map.class)));
+    }
+
+    @Test
+    void nonAsciiFields() throws Exception {
+        var name = "non-ascii-" + IdUtils.create();
+        put("/document/v1/mynamespace/music/docid/" + name, Map.of("artist", "Beyoncé", "album", "東京"));
+        try {
+            var task = Get.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue("id:mynamespace:music::" + name)).build();
+
+            var output = task.run(runContextFactory.of());
+
+            assertThat(output.getDocument(), allOf(hasEntry("artist", "Beyoncé"), hasEntry("album", "東京")));
+        } finally {
+            delete("/document/v1/mynamespace/music/docid/" + name);
+        }
     }
 
     @Test

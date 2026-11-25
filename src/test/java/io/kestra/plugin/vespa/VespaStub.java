@@ -12,8 +12,10 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Callback;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,12 +96,34 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
                 }
                 response.setStatus(answer.status());
                 response.getHeaders().add("Content-Type", "application/json");
-                Content.Sink.write(response, true, answer.body(), callback);
+                if (answer.cut()) {
+                    response.getHeaders().put("Content-Length", answer.streamed() * 2);
+                    stream(response, answer.streamed());
+                    callback.failed(new IOException("cut on purpose"));
+                } else if (answer.streamed() > 0) {
+                    stream(response, answer.streamed());
+                    callback.succeeded();
+                } else {
+                    Content.Sink.write(response, true, answer.body(), callback);
+                }
                 return true;
             }
         });
         server.start();
         return new VespaStub(server, seen, mostAnswering);
+    }
+
+    // no Content-Length unless the answer sets one, so the client can't know the size before reading
+    private static void stream(Response response, long size) throws IOException {
+        var chunk = new byte[64 * 1024];
+        Arrays.fill(chunk, (byte) 'a');
+        try (var out = Content.Sink.asOutputStream(response)) {
+            for (long left = size; left > 0; left -= chunk.length) {
+                out.write(chunk, 0, (int) Math.min(chunk.length, left));
+            }
+        } catch (IOException closedByClient) {
+            // the client stopped reading at its cap
+        }
     }
 
     String endpoint() {
@@ -111,9 +135,22 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         server.stop();
     }
 
-    record Answer(int status, String body, Duration delay) {
+    // streamed: a body of that many bytes sent in chunks instead of `body`; cut: the connection drops after them, half way through the announced length
+    record Answer(int status, String body, Duration delay, long streamed, boolean cut) {
         Answer(int status, String body) {
             this(status, body, Duration.ZERO);
+        }
+
+        Answer(int status, String body, Duration delay) {
+            this(status, body, delay, 0, false);
+        }
+
+        static Answer streamed(long size) {
+            return new Answer(200, null, Duration.ZERO, size, false);
+        }
+
+        static Answer cut(long size) {
+            return new Answer(200, null, Duration.ZERO, size, true);
         }
     }
 

@@ -62,7 +62,8 @@ import java.util.concurrent.atomic.AtomicReference;
         records in an ION file. The feed client has its own HTTP stack: `connectTimeout` is unused (the client waits \
         30 seconds to connect), and `endpoint` must have no path (only scheme, host and port), since the client sends \
         to the host's root. Before feeding, `Feed` sends one `HEAD /state/v1/health` through Kestra's HTTP \
-        client, so Kestra's allowed and denied hosts apply to it too."""
+        client, so Kestra's allowed and denied hosts apply to it too. A `kestra://` file in `from` is read whole into \
+        memory before the first record is sent."""
 )
 @Plugin(
     metrics = {
