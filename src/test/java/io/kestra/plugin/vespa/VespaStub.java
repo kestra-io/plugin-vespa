@@ -96,10 +96,13 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
                 }
                 response.setStatus(answer.status());
                 response.getHeaders().add("Content-Type", "application/json");
-                if (answer.cut()) {
+                if (answer.isCut()) {
                     response.getHeaders().put("Content-Length", answer.streamed() * 2);
                     stream(response, answer.streamed());
                     callback.failed(new IOException("cut on purpose"));
+                } else if (!answer.stall().isZero()) {
+                    stall(response, answer.streamed(), answer.stall());
+                    callback.succeeded();
                 } else if (answer.streamed() > 0) {
                     stream(response, answer.streamed());
                     callback.succeeded();
@@ -126,6 +129,19 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         }
     }
 
+    // sends part of the body, then nothing for `stall`, then ends it
+    private static void stall(Response response, long size, Duration stall) {
+        var chunk = new byte[(int) size];
+        Arrays.fill(chunk, (byte) 'a');
+        try (var out = Content.Sink.asOutputStream(response)) {
+            out.write(chunk);
+            out.flush();
+            Thread.sleep(stall);
+        } catch (IOException | InterruptedException closedByClient) {
+            // the client gave up at its read timeout
+        }
+    }
+
     String endpoint() {
         return "http://localhost:" + ((ServerConnector) server.getConnectors()[0]).getLocalPort();
     }
@@ -135,22 +151,30 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         server.stop();
     }
 
-    // streamed: a body of that many bytes sent in chunks instead of `body`; cut: the connection drops after them, half way through the announced length
-    record Answer(int status, String body, Duration delay, long streamed, boolean cut) {
+    // `streamed` bytes sent in chunks replace `body`, `isCut` drops the connection half way through the announced length, `stall` pauses after them
+    record Answer(int status, String body, Duration delay, long streamed, boolean isCut, Duration stall) {
         Answer(int status, String body) {
             this(status, body, Duration.ZERO);
         }
 
         Answer(int status, String body, Duration delay) {
-            this(status, body, delay, 0, false);
+            this(status, body, delay, 0, false, Duration.ZERO);
         }
 
         static Answer streamed(long size) {
-            return new Answer(200, null, Duration.ZERO, size, false);
+            return streamed(200, size);
+        }
+
+        static Answer streamed(int status, long size) {
+            return new Answer(status, null, Duration.ZERO, size, false, Duration.ZERO);
         }
 
         static Answer cut(long size) {
-            return new Answer(200, null, Duration.ZERO, size, true);
+            return new Answer(200, null, Duration.ZERO, size, true, Duration.ZERO);
+        }
+
+        static Answer stalled(long size, Duration stall) {
+            return new Answer(200, null, Duration.ZERO, size, false, stall);
         }
     }
 

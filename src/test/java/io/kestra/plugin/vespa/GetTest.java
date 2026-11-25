@@ -42,16 +42,16 @@ class GetTest extends VespaContainer {
 
     @Test
     void nonAsciiFields() throws Exception {
-        var name = "non-ascii-" + IdUtils.create();
-        put("/document/v1/mynamespace/music/docid/" + name, Map.of("artist", "Beyoncé", "album", "東京"));
+        var name = "non-ascii-%s".formatted(IdUtils.create());
+        put("/document/v1/mynamespace/music/docid/%s".formatted(name), Map.of("artist", "Beyoncé", "album", "東京"));
         try {
-            var task = Get.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue("id:mynamespace:music::" + name)).build();
+            var task = Get.builder().endpoint(Property.ofValue(endpoint())).documentId(Property.ofValue("id:mynamespace:music::%s".formatted(name))).build();
 
             var output = task.run(runContextFactory.of());
 
             assertThat(output.getDocument(), allOf(hasEntry("artist", "Beyoncé"), hasEntry("album", "東京")));
         } finally {
-            delete("/document/v1/mynamespace/music/docid/" + name);
+            delete("/document/v1/mynamespace/music/docid/%s".formatted(name));
         }
     }
 

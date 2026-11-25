@@ -2,6 +2,7 @@ package io.kestra.plugin.vespa;
 
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.HttpResponse;
+import io.kestra.core.http.client.HttpClientResponseException;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.serializers.JacksonMapper;
@@ -113,10 +114,18 @@ class VespaConnectionTest extends VespaContainer {
 
     @Test
     void endpointNotAnHttpUrl() {
-        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1", "http://:8080", "http://localhost:abc", "http://u:pw@localhost", "http://u@localhost", "http://a^b:8080", "http://h:8080/%zz", "http://[zz]:8080", "http://a|b", "http://h/x{y}")) {
+        for (var invalid : List.of("", "localhost", "localhost:18080", "http://", "http:/search", "http://localhost:18080?x=1", "http://:8080", "http://localhost:abc", "http://u:pw@localhost", "http://u@localhost", "http://a^b:8080", "http://h:8080/%zz", "http://[zz]:8080", "http://a|b", "http://h/x{y}", "http://h:99999", "http://h:0", "http://h:99999999999", "http://[::1]:70000")) {
             var e = assertThrows(IllegalArgumentException.class, () -> send(probe(invalid), get("/search/")), invalid);
 
-            assertThat(e.getMessage(), containsString("got: '" + invalid + "'"));
+            assertThat(e.getMessage(), containsString("got: '%s'".formatted(invalid)));
+        }
+    }
+
+    @Test
+    void endpointWithAnyValidPort() throws Exception {
+        var runContext = runContextFactory.of();
+        for (var valid : List.of("http://h", "http://h:1", "http://h:65535", "http://a_b:8080", "http://[::1]:8080")) {
+            assertThat(valid, probe(valid).endpoint(runContext), is(valid));
         }
     }
 
@@ -124,23 +133,61 @@ class VespaConnectionTest extends VespaContainer {
     void answerOverTheCapFails() throws Exception {
         // a body that never ends: the read must stop at the cap, not drain the rest
         try (var stub = VespaStub.answering(VespaStub.Answer.streamed(Long.MAX_VALUE))) {
-            var e = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint() + "/prefix"), get("/search/?yql=secret"))));
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThrows(IllegalStateException.class, () -> send(probe("%s/prefix".formatted(stub.endpoint())), get("/search/?yql=secret"))));
 
-            assertThat(e.getMessage(), allOf(
-                containsString("104857600 bytes"),
-                containsString("GET /prefix/search/"),
-                not(containsString("secret")),
-                containsString("hits")
-            ));
+            assertThat(e.getMessage(), is("Vespa's answer to GET /prefix/search/ is larger than 33554432 bytes. Check that `endpoint` points to Vespa, and for a query ask for fewer `hits` or summary fields."));
+        }
+    }
+
+    @Test
+    void answerOneByteOverTheCapFails() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(32L * 1024 * 1024 + 1))) {
+            var e = assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint()), get("/search/")));
+
+            assertThat(e.getMessage(), containsString("larger than 33554432 bytes"));
         }
     }
 
     @Test
     void answerAtTheCapIsRead() throws Exception {
-        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(100L * 1024 * 1024))) {
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(32L * 1024 * 1024))) {
             var response = send(probe(stub.endpoint()), get("/search/"));
 
-            assertThat(response.getBody().length(), is(100 * 1024 * 1024));
+            assertThat(response.getBody().length(), is(32 * 1024 * 1024));
+        }
+    }
+
+    @Test
+    void errorAnswerOverTheCapFails() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.streamed(500, Long.MAX_VALUE))) {
+            var e = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint()), get("/search/"))));
+
+            assertThat(e.getMessage(), startsWith("Vespa's answer to GET /search/ is larger than 33554432 bytes."));
+        }
+    }
+
+    @Test
+    void errorAnswerKeepsCoreMessageAndBody() throws Exception {
+        try (var stub = VespaStub.answering(404, """
+            {"message":"not here"}""")) {
+            var e = assertThrows(HttpClientResponseException.class, () -> send(probe(stub.endpoint()), get("/document/v1/a/b/docid/1")));
+
+            assertThat(e.getMessage(), allOf(startsWith("Failed http request with response code '404' and body:"), endsWith("""
+                {"message":"not here"}""")));
+            assertThat(e.getResponse().getStatus().getCode(), is(404));
+            assertThat(new String((byte[]) e.getResponse().getBody(), StandardCharsets.UTF_8), is("""
+                {"message":"not here"}"""));
+        }
+    }
+
+    @Test
+    void errorAnswerWithoutBody() throws Exception {
+        try (var stub = VespaStub.answering(500, "")) {
+            var head = HttpRequest.builder().uri(URI.create("/search/")).method("HEAD").build();
+
+            var e = assertThrows(HttpClientResponseException.class, () -> send(probe(stub.endpoint()), head));
+
+            assertThat(e.getMessage(), is("Failed http request with response code '500'"));
         }
     }
 
@@ -149,7 +196,24 @@ class VespaConnectionTest extends VespaContainer {
         try (var stub = VespaStub.answering(VespaStub.Answer.cut(1024))) {
             var e = assertThrows(IllegalStateException.class, () -> send(probe(stub.endpoint()), get("/search/")));
 
-            assertThat(e.getMessage(), startsWith("Reading Vespa's answer to GET /search/ failed: "));
+            assertThat(e.getMessage(), allOf(
+                startsWith("Reading Vespa's answer to GET /search/ failed: "),
+                endsWith(". Check that `endpoint` points to Vespa and try again.")
+            ));
+        }
+    }
+
+    @Test
+    void answerStalledFails() throws Exception {
+        try (var stub = VespaStub.answering(VespaStub.Answer.stalled(1024, Duration.ofSeconds(2)))) {
+            var task = Probe.builder()
+                .endpoint(Property.ofValue(stub.endpoint()))
+                .readTimeout(Property.ofValue(Duration.ofMillis(300)))
+                .build();
+
+            var e = assertThrows(IllegalStateException.class, () -> send(task, get("/search/")));
+
+            assertThat(e.getMessage(), is("Vespa's answer to GET /search/ stopped for longer than `readTimeout`. Raise `readTimeout`, or for a query ask for fewer `hits`."));
         }
     }
 
