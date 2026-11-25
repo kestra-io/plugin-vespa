@@ -112,28 +112,26 @@ public interface VespaConnectionInterface {
         if (code < 200 || code >= 300) {
             throw failure(response, body.get());
         }
-        return HttpResponse.<String>builder()
-            .status(response.getStatus())
-            .headers(response.getHeaders())
-            .endpointDetail(response.getEndpointDetail())
-            .request(response.getRequest())
-            .body(body.get() == null ? null : new String(body.get(), StandardCharsets.UTF_8))
-            .build();
+        return withBody(response, body.get() == null ? null : new String(body.get(), StandardCharsets.UTF_8));
     }
 
     // the same exception, message and byte[] body core builds for an error answer (`HttpResponseFailure`), from the capped body
     private static HttpClientResponseException failure(HttpResponse<Void> response, byte[] body) {
-        var message = "Failed http request with response code '%d'".formatted(response.getStatus().getCode());
-        if (body != null) {
-            message += " and body:\n%s".formatted(new String(body, StandardCharsets.UTF_8));
-        }
-        return new HttpClientResponseException(message, HttpResponse.<byte[]>builder()
+        var code = response.getStatus().getCode();
+        var message = body == null
+            ? "Failed http request with response code '%d'".formatted(code)
+            : "Failed http request with response code '%d' and body:\n%s".formatted(code, new String(body, StandardCharsets.UTF_8));
+        return new HttpClientResponseException(message, withBody(response, body));
+    }
+
+    private static <T> HttpResponse<T> withBody(HttpResponse<Void> response, T body) {
+        return HttpResponse.<T>builder()
             .status(response.getStatus())
             .headers(response.getHeaders())
             .endpointDetail(response.getEndpointDetail())
             .request(response.getRequest())
             .body(body)
-            .build());
+            .build();
     }
 
     // read with a cap, so a wrong endpoint can't fill the worker's memory
@@ -170,7 +168,7 @@ public interface VespaConnectionInterface {
         return StringUtils.stripEnd(rEndpoint, "/");
     }
 
-    // `URI` reads an out-of-range port as a registry authority (host and port unset), as it does a host with `_`, so the digits are checked here
+    // `URI` accepts any port that fits an int (99999 included), so the range is checked here
     private static boolean isPort(String digits) {
         if (digits == null) {
             return true;

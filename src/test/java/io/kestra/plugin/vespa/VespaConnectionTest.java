@@ -11,6 +11,8 @@ import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -200,6 +202,7 @@ class VespaConnectionTest extends VespaContainer {
                 startsWith("Reading Vespa's answer to GET /search/ failed: "),
                 endsWith(". Check that `endpoint` points to Vespa and try again.")
             ));
+            assertThat(e.getCause(), instanceOf(IOException.class));
         }
     }
 
@@ -214,6 +217,7 @@ class VespaConnectionTest extends VespaContainer {
             var e = assertThrows(IllegalStateException.class, () -> send(task, get("/search/")));
 
             assertThat(e.getMessage(), is("Vespa's answer to GET /search/ stopped for longer than `readTimeout`. Raise `readTimeout`, or for a query ask for fewer `hits`."));
+            assertThat(e.getCause(), instanceOf(SocketTimeoutException.class));
         }
     }
 
