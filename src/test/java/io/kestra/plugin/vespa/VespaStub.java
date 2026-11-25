@@ -137,8 +137,10 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
             out.write(chunk);
             out.flush();
             Thread.sleep(stall);
-        } catch (IOException | InterruptedException closedByClient) {
+        } catch (IOException closedByClient) {
             // the client gave up at its read timeout
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
