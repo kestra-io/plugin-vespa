@@ -121,7 +121,7 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         var chunk = new byte[64 * 1024];
         Arrays.fill(chunk, (byte) 'a');
         try (var out = Content.Sink.asOutputStream(response)) {
-            for (long left = size; left > 0; left -= chunk.length) {
+            for (var left = size; left > 0; left -= chunk.length) {
                 out.write(chunk, 0, (int) Math.min(chunk.length, left));
             }
         } catch (IOException closedByClient) {
@@ -129,7 +129,6 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         }
     }
 
-    // sends part of the body, then nothing for `stall`, then ends it
     private static void stall(Response response, long size, Duration stall) {
         var chunk = new byte[(int) size];
         Arrays.fill(chunk, (byte) 'a');
