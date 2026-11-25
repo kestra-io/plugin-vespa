@@ -187,38 +187,46 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     @Override
     public Output run(RunContext runContext) throws Exception {
         var rFetchType = runContext.render(fetchType).as(FetchType.class).orElse(FetchType.FETCH);
-
-        var body = body(runContext, rFetchType);
-        var request = HttpRequest.builder()
-            .uri(URI.create("/search/"))
-            .method("POST")
-            .body(HttpRequest.JsonRequestBody.of(body))
-            .build();
-        String answer;
-        try (var client = client(runContext)) {
-            answer = request(runContext, client, request).getBody();
-        }
-
-        var root = root(answer);
-        // degraded coverage (like a soft timeout) still returns usable hits, so Vespa's errors are shown, not thrown
-        root.path("errors").forEach(error -> runContext.logger().warn("Vespa answered with an error: {}: {}", error.path("summary").asText(), error.path("message").asText()));
-
-        var rows = rows(root);
-        var output = Output.builder().totalCount(root.at("/fields/totalCount").asLong());
+        var answer = answer(runContext, rFetchType);
+        var rows = answer.rows();
+        var output = Output.builder().totalCount(answer.totalCount());
         var built = switch (rFetchType) {
             case FETCH -> output.rows(rows).size(rows.size()).build();
             case FETCH_ONE -> output.row(rows.isEmpty() ? null : rows.getFirst()).size(Math.min(rows.size(), 1)).build();
             case STORE -> output.uri(store(runContext, rows)).size(rows.size()).build();
             default -> output.build();
         };
-        if (rFetchType == FetchType.STORE && offset(body) + rows.size() < built.getTotalCount()) {
+        if (rFetchType == FetchType.STORE && answer.offset() + rows.size() < built.getTotalCount()) {
             runContext.logger().warn("Stored {} of {} matching hits; raise `hits` or page with `offset` to store more.", rows.size(), built.getTotalCount());
         }
         runContext.metric(Counter.of("records", built.getSize() == null ? 0 : built.getSize()));
         return built;
     }
 
-    private static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
+    // the trigger needs the answer's errors and coverage, which the task's output doesn't carry
+    Answer answer(RunContext runContext, FetchType rFetchType) throws Exception {
+        var body = body(runContext, rFetchType);
+        var request = HttpRequest.builder()
+            .uri(URI.create("/search/"))
+            .method("POST")
+            .body(HttpRequest.JsonRequestBody.of(body))
+            .build();
+        String response;
+        try (var client = client(runContext)) {
+            response = request(runContext, client, request).getBody();
+        }
+
+        var root = root(response);
+        // degraded coverage (like a soft timeout) still returns usable hits, so Vespa's errors are shown, not thrown
+        root.path("errors").forEach(error -> runContext.logger().warn("Vespa answered with an error: {}: {}", error.path("summary").asText(), error.path("message").asText()));
+
+        return new Answer(rows(root), root.at("/fields/totalCount").asLong(), offset(body), root.path("errors"), root.at("/coverage/full").asBoolean(true));
+    }
+
+    record Answer(List<Map<String, Object>> rows, long totalCount, long offset, JsonNode errors, boolean fullCoverage) {
+    }
+
+    static URI store(RunContext runContext, List<Map<String, Object>> rows) throws IOException {
         var file = runContext.workingDir().createTempFile(".ion").toFile();
         // one stream, not FileSerde.write per row: on Kestra 2.0 each write is a whole binary ION document (kestra-io/kestra#22557)
         try (var output = new BufferedOutputStream(new FileOutputStream(file), FileSerde.BUFFER_SIZE)) {
@@ -276,7 +284,7 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
     }
 
     // nested maps are read as dotted names, so `model: {queryString: x}` is checked like `model.queryString`
-    private static Stream<String> dottedNames(String prefix, Map<?, ?> parameters) {
+    static Stream<String> dottedNames(String prefix, Map<?, ?> parameters) {
         return parameters.entrySet().stream().flatMap(entry -> entry.getValue() instanceof Map<?, ?> nested
             ? dottedNames(prefix + entry.getKey() + ".", nested)
             : Stream.of(prefix + entry.getKey()));
