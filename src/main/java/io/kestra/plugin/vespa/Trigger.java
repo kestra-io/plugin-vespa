@@ -125,7 +125,8 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         description = """
             Default 100, at least 1. The trigger asks Vespa for `hits` plus the documents it already delivered at the \
             watermark value, and Vespa refuses more than its `maxHits` in one answer (400 unless the application's \
-            query profile raises it), so leave room: keep `hits` well under `maxHits`."""
+            query profile raises it), so leave room: keep `hits` well under `maxHits`. \
+            The plugin reads at most 32 MiB of Vespa's answer and a bigger one fails the poll, so with many hits ask for fewer `hits` or summary fields."""
     )
     @Builder.Default
     @PluginProperty(group = "main")

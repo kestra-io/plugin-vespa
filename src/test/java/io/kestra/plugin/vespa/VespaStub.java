@@ -12,8 +12,10 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Callback;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,12 +96,51 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
                 }
                 response.setStatus(answer.status());
                 response.getHeaders().add("Content-Type", "application/json");
-                Content.Sink.write(response, true, answer.body(), callback);
+                if (answer.isCut()) {
+                    response.getHeaders().put("Content-Length", answer.streamed() * 2);
+                    stream(response, answer.streamed());
+                    callback.failed(new IOException("cut on purpose"));
+                } else if (!answer.stall().isZero()) {
+                    stall(response, answer.streamed(), answer.stall());
+                    callback.succeeded();
+                } else if (answer.streamed() > 0) {
+                    stream(response, answer.streamed());
+                    callback.succeeded();
+                } else {
+                    Content.Sink.write(response, true, answer.body(), callback);
+                }
                 return true;
             }
         });
         server.start();
         return new VespaStub(server, seen, mostAnswering);
+    }
+
+    // no Content-Length unless the answer sets one, so the client can't know the size before reading
+    private static void stream(Response response, long size) throws IOException {
+        var chunk = new byte[64 * 1024];
+        Arrays.fill(chunk, (byte) 'a');
+        try (var out = Content.Sink.asOutputStream(response)) {
+            for (var left = size; left > 0; left -= chunk.length) {
+                out.write(chunk, 0, (int) Math.min(chunk.length, left));
+            }
+        } catch (IOException closedByClient) {
+            // the client stopped reading at its cap
+        }
+    }
+
+    private static void stall(Response response, long size, Duration stall) {
+        var chunk = new byte[(int) size];
+        Arrays.fill(chunk, (byte) 'a');
+        try (var out = Content.Sink.asOutputStream(response)) {
+            out.write(chunk);
+            out.flush();
+            Thread.sleep(stall);
+        } catch (IOException closedByClient) {
+            // the client gave up at its read timeout
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     String endpoint() {
@@ -111,9 +152,30 @@ record VespaStub(Server server, List<Seen> seen, AtomicInteger mostAnswering) im
         server.stop();
     }
 
-    record Answer(int status, String body, Duration delay) {
+    // `streamed` bytes sent in chunks replace `body`, `isCut` drops the connection half way through the announced length, `stall` pauses after them
+    record Answer(int status, String body, Duration delay, long streamed, boolean isCut, Duration stall) {
         Answer(int status, String body) {
             this(status, body, Duration.ZERO);
+        }
+
+        Answer(int status, String body, Duration delay) {
+            this(status, body, delay, 0, false, Duration.ZERO);
+        }
+
+        static Answer streamed(long size) {
+            return streamed(200, size);
+        }
+
+        static Answer streamed(int status, long size) {
+            return new Answer(status, null, Duration.ZERO, size, false, Duration.ZERO);
+        }
+
+        static Answer cut(long size) {
+            return new Answer(200, null, Duration.ZERO, size, true, Duration.ZERO);
+        }
+
+        static Answer stalled(long size, Duration stall) {
+            return new Answer(200, null, Duration.ZERO, size, false, stall);
         }
     }
 

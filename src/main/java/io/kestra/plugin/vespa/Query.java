@@ -133,7 +133,8 @@ public class Query extends AbstractVespaTask implements RunnableTask<Query.Outpu
         title = "Number of hits to return in one answer",
         description = """
             Unset, Vespa returns 10 hits with `fetchType=FETCH` or `STORE`; the task asks for 1 with `FETCH_ONE` and 0 with `NONE`. \
-            Vespa refuses more than 400 unless the application raises `maxHits` in its query profile."""
+            Vespa refuses more than 400 unless the application raises `maxHits` in its query profile. \
+            The plugin reads at most 32 MiB of Vespa's answer and a bigger one fails the task, so with many hits ask for fewer `hits` or summary fields."""
     )
     @PluginProperty(group = "main")
     private Property<@Min(0) Integer> hits;
